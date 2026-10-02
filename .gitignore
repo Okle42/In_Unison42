@@ -1,0 +1,6 @@
+build/
+*.log
+.DS_Store
+# 實機錄音（大、含環境聲）不進版控；標準答案 expected.json 要進（test.sh 比對用）
+testdata/*
+!testdata/expected.json

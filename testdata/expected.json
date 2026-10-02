@@ -1,0 +1,486 @@
+{
+ "_說明": "test.sh 產生：pp-reanalyze 每份錄音的標準答案（meanMs=到達時間相對參考喇叭、used=採用數、spreadMs=離散；容許 0.05 ms）",
+ "dumps": {
+  "A2-noise": {
+   "btCoarseMs": {
+    "GLASS5+": 184.9
+   },
+   "devices": {
+    "single|40PFH4082/96": {
+     "meanMs": 0.643,
+     "spreadMs": 0.012,
+     "used": 6
+    },
+    "single|GLASS5+": {
+     "meanMs": 81.06,
+     "spreadMs": 99.323,
+     "used": 6
+    },
+    "single|MSI MP242C": {
+     "meanMs": 0.23,
+     "spreadMs": 0.072,
+     "used": 6
+    },
+    "single|Mac mini的揚聲器": {
+     "meanMs": -0.0,
+     "spreadMs": 0.29,
+     "used": 6
+    }
+   },
+   "rc": 0
+  },
+  "A2-xylo": {
+   "btCoarseMs": {
+    "GLASS5+": 668.0
+   },
+   "devices": {
+    "single|40PFH4082/96": {
+     "meanMs": 1.807,
+     "spreadMs": 1.107,
+     "used": 6
+    },
+    "single|GLASS5+": {
+     "meanMs": 583.548,
+     "spreadMs": 77.485,
+     "used": 6
+    },
+    "single|MSI MP242C": {
+     "meanMs": 2.578,
+     "spreadMs": 15.077,
+     "used": 6
+    },
+    "single|Mac mini的揚聲器": {
+     "meanMs": -0.0,
+     "spreadMs": 4.024,
+     "used": 6
+    }
+   },
+   "rc": 0
+  },
+  "A3-xylostrong": {
+   "btCoarseMs": {
+    "GLASS5+": 456.0
+   },
+   "devices": {
+    "single|40PFH4082/96": {
+     "meanMs": 2.043,
+     "spreadMs": 5.349,
+     "used": 6
+    },
+    "single|GLASS5+": {
+     "meanMs": 361.875,
+     "spreadMs": 121.219,
+     "used": 6
+    },
+    "single|MSI MP242C": {
+     "meanMs": 6.036,
+     "spreadMs": 15.126,
+     "used": 6
+    },
+    "single|Mac mini的揚聲器": {
+     "meanMs": 0.0,
+     "spreadMs": 1.828,
+     "used": 6
+    }
+   },
+   "rc": 0
+  },
+  "AB1": {
+   "btCoarseMs": {
+    "GLASS5+": 652.5
+   },
+   "devices": {
+    "帶通白雜訊脈衝（300 Hz–7 kHz、80 ms；舊版）|40PFH4082/96": {
+     "meanMs": 0.585,
+     "spreadMs": 0.005,
+     "used": 4
+    },
+    "帶通白雜訊脈衝（300 Hz–7 kHz、80 ms；舊版）|GLASS5+": {
+     "meanMs": "nan",
+     "spreadMs": 0.0,
+     "used": 0
+    },
+    "帶通白雜訊脈衝（300 Hz–7 kHz、80 ms；舊版）|MSI MP242C": {
+     "meanMs": 0.133,
+     "spreadMs": 0.008,
+     "used": 4
+    },
+    "帶通白雜訊脈衝（300 Hz–7 kHz、80 ms；舊版）|Mac mini的揚聲器": {
+     "meanMs": -0.0,
+     "spreadMs": 0.005,
+     "used": 3
+    },
+    "木琴 C5（523.25 Hz、播放 0.6 s、喀 3 ms／峰值 ×0.5）|40PFH4082/96": {
+     "meanMs": 1.148,
+     "spreadMs": 2.253,
+     "used": 4
+    },
+    "木琴 C5（523.25 Hz、播放 0.6 s、喀 3 ms／峰值 ×0.5）|GLASS5+": {
+     "meanMs": "nan",
+     "spreadMs": 0.0,
+     "used": 0
+    },
+    "木琴 C5（523.25 Hz、播放 0.6 s、喀 3 ms／峰值 ×0.5）|MSI MP242C": {
+     "meanMs": 7.954,
+     "spreadMs": 1.982,
+     "used": 2
+    },
+    "木琴 C5（523.25 Hz、播放 0.6 s、喀 3 ms／峰值 ×0.5）|Mac mini的揚聲器": {
+     "meanMs": 0.0,
+     "spreadMs": 1.97,
+     "used": 3
+    }
+   },
+   "rc": 1
+  },
+  "AB2-strong": {
+   "btCoarseMs": {
+    "GLASS5+": 672.7
+   },
+   "devices": {
+    "帶通白雜訊脈衝（300 Hz–7 kHz、80 ms；舊版）|40PFH4082/96": {
+     "meanMs": 0.592,
+     "spreadMs": 0.01,
+     "used": 4
+    },
+    "帶通白雜訊脈衝（300 Hz–7 kHz、80 ms；舊版）|GLASS5+": {
+     "meanMs": "nan",
+     "spreadMs": 0.0,
+     "used": 0
+    },
+    "帶通白雜訊脈衝（300 Hz–7 kHz、80 ms；舊版）|MSI MP242C": {
+     "meanMs": 0.298,
+     "spreadMs": 0.029,
+     "used": 4
+    },
+    "帶通白雜訊脈衝（300 Hz–7 kHz、80 ms；舊版）|Mac mini的揚聲器": {
+     "meanMs": 0.0,
+     "spreadMs": 0.025,
+     "used": 3
+    },
+    "木琴 C5（523.25 Hz、播放 0.6 s、喀 5 ms／峰值 ×0.7）|40PFH4082/96": {
+     "meanMs": -5.042,
+     "spreadMs": 3.548,
+     "used": 4
+    },
+    "木琴 C5（523.25 Hz、播放 0.6 s、喀 5 ms／峰值 ×0.7）|GLASS5+": {
+     "meanMs": "nan",
+     "spreadMs": 0.0,
+     "used": 0
+    },
+    "木琴 C5（523.25 Hz、播放 0.6 s、喀 5 ms／峰值 ×0.7）|MSI MP242C": {
+     "meanMs": -4.32,
+     "spreadMs": 9.955,
+     "used": 3
+    },
+    "木琴 C5（523.25 Hz、播放 0.6 s、喀 5 ms／峰值 ×0.7）|Mac mini的揚聲器": {
+     "meanMs": -0.0,
+     "spreadMs": 11.961,
+     "used": 3
+    }
+   },
+   "rc": 1
+  },
+  "D-pulse": {
+   "btCoarseMs": {
+    "GLASS5+": 56.6
+   },
+   "devices": {
+    "single|40PFH4082/96": {
+     "meanMs": 0.636,
+     "spreadMs": 0.085,
+     "used": 6
+    },
+    "single|GLASS5+": {
+     "meanMs": -14.702,
+     "spreadMs": 208.611,
+     "used": 6
+    },
+    "single|MSI MP242C": {
+     "meanMs": 0.336,
+     "spreadMs": 1.246,
+     "used": 6
+    },
+    "single|Mac mini的揚聲器": {
+     "meanMs": -0.0,
+     "spreadMs": 0.295,
+     "used": 6
+    }
+   },
+   "rc": 0
+  },
+  "D2-pulse-pink": {
+   "btCoarseMs": {
+    "GLASS5+": 23.6
+   },
+   "devices": {
+    "single|40PFH4082/96": {
+     "meanMs": -0.349,
+     "spreadMs": 0.007,
+     "used": 4
+    },
+    "single|GLASS5+": {
+     "meanMs": -11.47,
+     "spreadMs": 159.504,
+     "used": 4
+    },
+    "single|MSI MP242C": {
+     "meanMs": -0.337,
+     "spreadMs": 0.046,
+     "used": 4
+    },
+    "single|Mac mini的揚聲器": {
+     "meanMs": 0.0,
+     "spreadMs": 0.008,
+     "used": 6
+    }
+   },
+   "rc": 0
+  },
+  "D3-pulse-bt": {
+   "btCoarseMs": {
+    "GLASS5+": 296.4
+   },
+   "devices": {
+    "single|40PFH4082/96": {
+     "meanMs": -0.038,
+     "spreadMs": 0.013,
+     "used": 4
+    },
+    "single|GLASS5+": {
+     "meanMs": 189.165,
+     "spreadMs": 171.572,
+     "used": 4
+    },
+    "single|MSI MP242C": {
+     "meanMs": 0.054,
+     "spreadMs": 0.04,
+     "used": 4
+    },
+    "single|Mac mini的揚聲器": {
+     "meanMs": -0.0,
+     "spreadMs": 0.012,
+     "used": 6
+    }
+   },
+   "rc": 0
+  },
+  "D4-pulse-bt": {
+   "btCoarseMs": {
+    "GLASS5+": 458.9
+   },
+   "devices": {
+    "single|40PFH4082/96": {
+     "meanMs": -0.079,
+     "spreadMs": 0.015,
+     "used": 4
+    },
+    "single|GLASS5+": {
+     "meanMs": 378.578,
+     "spreadMs": 0.143,
+     "used": 4
+    },
+    "single|MSI MP242C": {
+     "meanMs": -0.025,
+     "spreadMs": 0.023,
+     "used": 4
+    },
+    "single|Mac mini的揚聲器": {
+     "meanMs": -0.0,
+     "spreadMs": 0.02,
+     "used": 6
+    }
+   },
+   "rc": 0
+  },
+  "E1-detached": {
+   "btCoarseMs": {
+    "GLASS5+": 1986.7
+   },
+   "devices": {
+    "single|40PFH4082/96": {
+     "meanMs": 2.37,
+     "spreadMs": 197.318,
+     "used": 4
+    },
+    "single|GLASS5+": {
+     "meanMs": 786.31,
+     "spreadMs": 188.521,
+     "used": 4
+    },
+    "single|MSI MP242C": {
+     "meanMs": -16.157,
+     "spreadMs": 226.223,
+     "used": 4
+    },
+    "single|Mac mini的揚聲器": {
+     "meanMs": -0.0,
+     "spreadMs": 176.046,
+     "used": 6
+    }
+   },
+   "rc": 0
+  },
+  "E2-verify-pilot": {
+   "btCoarseMs": {
+    "GLASS5+": 492.1
+   },
+   "devices": {
+    "single|40PFH4082/96": {
+     "meanMs": -0.103,
+     "spreadMs": 0.143,
+     "used": 4
+    },
+    "single|GLASS5+": {
+     "meanMs": 413.269,
+     "spreadMs": 0.653,
+     "used": 4
+    },
+    "single|MSI MP242C": {
+     "meanMs": -0.186,
+     "spreadMs": 0.07,
+     "used": 4
+    },
+    "single|Mac mini的揚聲器": {
+     "meanMs": 0.0,
+     "spreadMs": 0.453,
+     "used": 6
+    }
+   },
+   "rc": 0
+  },
+  "E3-verify-pilot": {
+   "btCoarseMs": {
+    "GLASS5+": 458.8
+   },
+   "devices": {
+    "single|40PFH4082/96": {
+     "meanMs": -0.057,
+     "spreadMs": 0.004,
+     "used": 4
+    },
+    "single|GLASS5+": {
+     "meanMs": 378.817,
+     "spreadMs": 0.09,
+     "used": 4
+    },
+    "single|MSI MP242C": {
+     "meanMs": -0.05,
+     "spreadMs": 0.021,
+     "used": 4
+    },
+    "single|Mac mini的揚聲器": {
+     "meanMs": 0.0,
+     "spreadMs": 0.016,
+     "used": 6
+    }
+   },
+   "rc": 0
+  },
+  "P1-abpink": {
+   "btCoarseMs": {
+    "GLASS5+": 157.5
+   },
+   "devices": {
+    "帶通白雜訊脈衝（300 Hz–7 kHz、80 ms；舊版）|40PFH4082/96": {
+     "meanMs": -0.059,
+     "spreadMs": 0.333,
+     "used": 4
+    },
+    "帶通白雜訊脈衝（300 Hz–7 kHz、80 ms；舊版）|GLASS5+": {
+     "meanMs": "nan",
+     "spreadMs": 0.0,
+     "used": 0
+    },
+    "帶通白雜訊脈衝（300 Hz–7 kHz、80 ms；舊版）|MSI MP242C": {
+     "meanMs": 0.038,
+     "spreadMs": 0.348,
+     "used": 4
+    },
+    "帶通白雜訊脈衝（300 Hz–7 kHz、80 ms；舊版）|Mac mini的揚聲器": {
+     "meanMs": 0.0,
+     "spreadMs": 0.0,
+     "used": 2
+    },
+    "粉紅雜訊脈衝（1–4 kHz、80 ms、RMS −22 dBFS；延遲＝1–4 kHz 群延遲）|40PFH4082/96": {
+     "meanMs": -0.33,
+     "spreadMs": 0.004,
+     "used": 4
+    },
+    "粉紅雜訊脈衝（1–4 kHz、80 ms、RMS −22 dBFS；延遲＝1–4 kHz 群延遲）|GLASS5+": {
+     "meanMs": "nan",
+     "spreadMs": 0.0,
+     "used": 0
+    },
+    "粉紅雜訊脈衝（1–4 kHz、80 ms、RMS −22 dBFS；延遲＝1–4 kHz 群延遲）|MSI MP242C": {
+     "meanMs": -0.01,
+     "spreadMs": 0.007,
+     "used": 4
+    },
+    "粉紅雜訊脈衝（1–4 kHz、80 ms、RMS −22 dBFS；延遲＝1–4 kHz 群延遲）|Mac mini的揚聲器": {
+     "meanMs": -0.0,
+     "spreadMs": 0.008,
+     "used": 3
+    }
+   },
+   "rc": 1
+  },
+  "P2-pink-0dB": {
+   "btCoarseMs": {
+    "GLASS5+": 40.0
+   },
+   "devices": {
+    "single|40PFH4082/96": {
+     "meanMs": -0.325,
+     "spreadMs": 0.002,
+     "used": 4
+    },
+    "single|GLASS5+": {
+     "meanMs": -5.172,
+     "spreadMs": 146.743,
+     "used": 4
+    },
+    "single|MSI MP242C": {
+     "meanMs": -0.126,
+     "spreadMs": 0.078,
+     "used": 4
+    },
+    "single|Mac mini的揚聲器": {
+     "meanMs": 0.0,
+     "spreadMs": 0.022,
+     "used": 6
+    }
+   },
+   "rc": 0
+  },
+  "W8": {
+   "btCoarseMs": {
+    "GLASS5+": 457.6
+   },
+   "devices": {
+    "single|40PFH4082/96": {
+     "meanMs": 0.024,
+     "spreadMs": 0.006,
+     "used": 4
+    },
+    "single|GLASS5+": {
+     "meanMs": -1.412,
+     "spreadMs": 0.131,
+     "used": 4
+    },
+    "single|MSI MP242C": {
+     "meanMs": -0.237,
+     "spreadMs": 0.014,
+     "used": 4
+    },
+    "single|Mac mini的揚聲器": {
+     "meanMs": -0.0,
+     "spreadMs": 0.009,
+     "used": 6
+    }
+   },
+   "rc": 0
+  }
+ },
+ "toleranceMs": 0.05
+}

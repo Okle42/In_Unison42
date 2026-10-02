@@ -1,0 +1,125 @@
+// 【封存】重構前的單檔雛形 Sources/main.swift（2026-09-28 重構成多檔前的版本，僅供參考，不參與編譯）
+// In_Unison42 雛形：Process Tap 攔截系統聲音 → 內建喇叭原音 + 螢幕依內建音量套增益
+import CoreAudio
+import Foundation
+
+func addr(_ s: AudioObjectPropertySelector, _ sc: AudioObjectPropertyScope = kAudioObjectPropertyScopeGlobal, _ el: UInt32 = kAudioObjectPropertyElementMain) -> AudioObjectPropertyAddress {
+    AudioObjectPropertyAddress(mSelector: s, mScope: sc, mElement: el)
+}
+func getU32(_ id: AudioObjectID, _ s: AudioObjectPropertySelector, _ sc: AudioObjectPropertyScope = kAudioObjectPropertyScopeGlobal) -> UInt32 {
+    var a = addr(s, sc); var v: UInt32 = 0; var sz = UInt32(4)
+    AudioObjectGetPropertyData(id, &a, 0, nil, &sz, &v); return v
+}
+func getStr(_ id: AudioObjectID, _ s: AudioObjectPropertySelector) -> String {
+    var a = addr(s); var v: Unmanaged<CFString>?; var sz = UInt32(MemoryLayout<CFString?>.size)
+    guard AudioObjectGetPropertyData(id, &a, 0, nil, &sz, &v) == noErr, let v else { return "" }
+    return v.takeRetainedValue() as String
+}
+func allDevices() -> [AudioObjectID] {
+    var a = addr(kAudioHardwarePropertyDevices); var sz: UInt32 = 0
+    AudioObjectGetPropertyDataSize(AudioObjectID(kAudioObjectSystemObject), &a, 0, nil, &sz)
+    var ids = [AudioObjectID](repeating: 0, count: Int(sz) / 4)
+    AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &a, 0, nil, &sz, &ids); return ids
+}
+func hasOutput(_ id: AudioObjectID) -> Bool {
+    var a = addr(kAudioDevicePropertyStreams, kAudioObjectPropertyScopeOutput); var sz: UInt32 = 0
+    AudioObjectGetPropertyDataSize(id, &a, 0, nil, &sz); return sz > 0
+}
+func check(_ st: OSStatus, _ what: String) { if st != noErr { print("✗ \(what) 失敗 status=\(st)"); exit(1) } }
+
+// 1. 找裝置：內建喇叭＝主時鐘兼音量來源，其他實體輸出＝跟隨
+var builtin: AudioObjectID = 0
+var others: [AudioObjectID] = []
+for id in allDevices() where hasOutput(id) {
+    let t = getU32(id, kAudioDevicePropertyTransportType)
+    if t == kAudioDeviceTransportTypeBuiltIn { builtin = id }
+    else if t != kAudioDeviceTransportTypeAggregate && t != kAudioDeviceTransportTypeVirtual { others.append(id) }
+}
+guard builtin != 0 else { print("找不到內建喇叭"); exit(1) }
+print("主：\(getStr(builtin, kAudioObjectPropertyName))  跟隨：\(others.map { getStr($0, kAudioObjectPropertyName) })")
+
+// 2. 預設輸出設回內建喇叭（音量鍵才有作用）
+for s in [kAudioHardwarePropertyDefaultOutputDevice, kAudioHardwarePropertyDefaultSystemOutputDevice] {
+    var a = addr(s); var v = builtin
+    AudioObjectSetPropertyData(AudioObjectID(kAudioObjectSystemObject), &a, 0, nil, 4, &v)
+}
+
+// 3. Process Tap：全系統立體聲，排除自己，攔截期間原聲靜音
+var pa = addr(kAudioHardwarePropertyTranslatePIDToProcessObject)
+var pid = getpid(); var me: AudioObjectID = 0; var psz = UInt32(4)
+AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &pa, 4, &pid, &psz, &me)
+let td = CATapDescription(stereoGlobalTapButExcludeProcesses: me == 0 ? [] : [me])
+td.name = "In_Unison42-tap"
+td.isPrivate = true
+td.muteBehavior = .mutedWhenTapped
+var tap: AudioObjectID = 0
+check(AudioHardwareCreateProcessTap(td, &tap), "建立 tap")
+print("tap id=\(tap) uuid=\(td.uuid.uuidString)")
+
+// 4. 私有聚合裝置：tap 當輸入，內建+螢幕當輸出
+let subs: [[String: Any]] = ([builtin] + others).enumerated().map { i, d in
+    [kAudioSubDeviceUIDKey: getStr(d, kAudioDevicePropertyDeviceUID), kAudioSubDeviceDriftCompensationKey: i == 0 ? 0 : 1]
+}
+let desc: [String: Any] = [
+    kAudioAggregateDeviceNameKey: "In_Unison42",
+    kAudioAggregateDeviceUIDKey: "In_Unison42-\(UUID().uuidString)",
+    kAudioAggregateDeviceMainSubDeviceKey: getStr(builtin, kAudioDevicePropertyDeviceUID),
+    kAudioAggregateDeviceIsPrivateKey: 1,
+    kAudioAggregateDeviceIsStackedKey: 0,
+    kAudioAggregateDeviceTapAutoStartKey: 1,
+    kAudioAggregateDeviceSubDeviceListKey: subs,
+    kAudioAggregateDeviceTapListKey: [[kAudioSubTapUIDKey: td.uuid.uuidString, kAudioSubTapDriftCompensationKey: 1]],
+]
+var agg: AudioObjectID = 0
+check(AudioHardwareCreateAggregateDevice(desc as CFDictionary, &agg), "建立聚合裝置")
+
+// 5. 音量：讀內建喇叭 dB 與靜音 → 螢幕增益
+var gain: Float = 1
+var inPeak: Float = 0
+var outBufs = ""
+func readGain() -> (Float, Float, UInt32) {
+    var a = addr(kAudioDevicePropertyVolumeDecibels, kAudioObjectPropertyScopeOutput)
+    var db: Float32 = 0; var sz = UInt32(4)
+    AudioObjectGetPropertyData(builtin, &a, 0, nil, &sz, &db)
+    let mute = getU32(builtin, kAudioDevicePropertyMute, kAudioObjectPropertyScopeOutput)
+    return (mute != 0 ? 0 : powf(10, db / 20), db, mute)
+}
+
+// 6. IOProc：tap 輸入 → 第 0 組輸出原音，其餘乘增益
+var proc: AudioDeviceIOProcID?
+check(AudioDeviceCreateIOProcIDWithBlock(&proc, agg, nil) { _, inData, _, outData, _ in
+    let ins = UnsafeMutableAudioBufferListPointer(UnsafeMutablePointer(mutating: inData))
+    let outs = UnsafeMutableAudioBufferListPointer(outData)
+    guard let src = ins.first, let sp = src.mData?.assumingMemoryBound(to: Float.self) else { return }
+    let n = Int(src.mDataByteSize) / 4
+    var pk: Float = 0
+    for i in 0..<n { pk = max(pk, abs(sp[i])) }
+    inPeak = max(inPeak, pk)
+    if outBufs.isEmpty { outBufs = "in=\(ins.count)組 \(src.mNumberChannels)ch / out=" + outs.map { "\($0.mNumberChannels)ch" }.joined(separator: ",") }
+    let g = gain
+    for (bi, b) in outs.enumerated() {
+        guard let dp = b.mData?.assumingMemoryBound(to: Float.self) else { continue }
+        let m = min(n, Int(b.mDataByteSize) / 4)
+        let k: Float = bi == 0 ? 1 : g
+        for i in 0..<m { dp[i] = sp[i] * k }
+    }
+}, "建立 IOProc")
+check(AudioDeviceStart(agg, proc), "啟動")
+print("✓ 運轉中（Ctrl+C 結束）")
+
+func cleanup() {
+    AudioDeviceStop(agg, proc); AudioDeviceDestroyIOProcID(agg, proc!)
+    AudioHardwareDestroyAggregateDevice(agg); AudioHardwareDestroyProcessTap(tap)
+    print("已清除 tap 與聚合裝置"); exit(0)
+}
+signal(SIGINT, SIG_IGN); signal(SIGTERM, SIG_IGN)
+let s1 = DispatchSource.makeSignalSource(signal: SIGINT); s1.setEventHandler(handler: cleanup); s1.resume()
+let s2 = DispatchSource.makeSignalSource(signal: SIGTERM); s2.setEventHandler(handler: cleanup); s2.resume()
+
+Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { _ in gain = readGain().0 }
+Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { _ in
+    let (g, db, m) = readGain()
+    print(String(format: "音量 %.1f dB mute=%d → 螢幕增益 %.3f | 輸入峰值 %.3f | %@", db, m, g, inPeak, outBufs))
+    inPeak = 0
+}
+RunLoop.main.run()
