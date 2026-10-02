@@ -168,7 +168,7 @@ A Bluetooth speaker's (GLASS5+) latency slowly drifts within a single stream (me
 - ⚠ **Current limitation (to be honest)**: this compensation only holds when there is a measurement roughly every 5 minutes (D2: residual < 2 ms). **When tracks play back to back with no pause of 5 seconds or more,
   the "count down only after 30 minutes" rule means the correction freezes about 7 minutes after a measurement, and over the next 20-odd minutes the error grows with GLASS5+'s drift to somewhere between ten-odd and twenty-odd ms**.
   In the hardware acceptance run (measurements 10–18 minutes apart), all 3 residuals — +4.1 / −9.2 / −12.5 ms — exceeded 3 ms. In addition, late in that run GLASS5+ showed **step jumps of about 17 ms**
-  (within one 4-second measurement, the first two pulses at 436.7 ms and the last two at 419.4 / 421.6 ms), which no prediction can compensate. Whether to change the rule: see "第 C 輪留給 Kang 決定" (round C, left for Kang to decide) in [docs/ROADMAP.md](docs/ROADMAP.md) (Chinese).
+  (within one 4-second measurement, the first two pulses at 436.7 ms and the last two at 419.4 / 421.6 ms), which no prediction can compensate. Whether to change the rule: see "第 C 輪留給 Kang 決定" (open questions from round C) in [docs/ROADMAP.md](docs/ROADMAP.md) (Chinese).
 - Panel switch "Bluetooth drift compensation" (on by default) + per device: drift rate, current correction, prediction misses, next short calibration. `ctl drift status` (includes the last 6 Bluetooth residuals).
 
 ### Other
@@ -261,7 +261,7 @@ the signal is pink-noise pulses at 1–4 kHz (not a sweep); arrival time is the 
 - **Wired** output devices that also have a microphone (USB headsets) don't join in (see How it works, item 7). Bluetooth speakers use the output-only path: verified on hardware not to trigger HFP, 0 underruns over 3 minutes of resampling (at gain 0).
   **GLASS5+ is calibrated, and all four devices play in Music mode** (an app relaunch automatically triggers `--only` recalibration, because latency differs by 35–61 ms after a relaunch).
   The Bluetooth verification threshold is **3 ms** (1 ms between wired devices): V7 passed 3 times in a row (Bluetooth difference 0.81 / 1.53 / 2.17 ms), but **Bluetooth latency drifts in one direction within a stream** (V7: 1.4 ms in 1.5 minutes),
-  so at that rate it exceeds 3 ms within a few minutes — **"Bluetooth within 3 ms" only holds shortly after calibration**; there is currently no periodic re-measurement, and the PI loop doesn't use measured latency (pending Kang's decision).
+  so at that rate it exceeds 3 ms within a few minutes — **"Bluetooth within 3 ms" only holds shortly after calibration**; there is currently no periodic re-measurement, and the PI loop doesn't use measured latency (not yet decided).
   (Older record: with a 1 ms threshold, 4 of 6 runs passed between 13:32 and 13:41.) Long-term resampling while Bluetooth is playing, and latency before vs. after a **real disconnect/reconnect**, haven't been measured yet.
 - The login item (SMAppService) is registered, but log-out/log-in and restart have **not** been tested. **The app doesn't restart itself after a crash** (`SMAppService.mainApp` has no KeepAlive; the old LaunchAgent did):
   on a crash the tap disappears with the process and audio falls back to the built-in speaker, so you have to reopen the app manually. Automatic recovery would need a separate design (e.g. an `SMAppService.agent` watchdog), which isn't done.
