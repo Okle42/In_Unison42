@@ -280,3 +280,7 @@ Code structure and internal API: [docs/API.md](docs/API.md) (Chinese). Hardware 
 ## Roadmap
 
 See [docs/ROADMAP.md](docs/ROADMAP.md) (Chinese). Looking for someone with AirPlay hardware to take on AirPlay output.
+
+## License
+
+[MIT](LICENSE) © 2026 Okle42

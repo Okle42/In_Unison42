@@ -274,3 +274,7 @@ $B pp-signal pink|noise|xylo|xylo-strong out.wav # 測試音寫成 WAV（試聽�
 ## 後續規劃
 
 見 [docs/ROADMAP.md](docs/ROADMAP.md)。AirPlay 輸出徵求有裝置的人接手。
+
+## 授權
+
+[MIT](LICENSE) © 2026 Okle42
