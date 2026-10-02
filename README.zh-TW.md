@@ -45,7 +45,7 @@ open ~/Applications/In_Unison42.app
   另編一份正式版旗標確認診斷指令與危險參數被擋（10 項）。非 0 = 有回歸；`--update-expected` 重產標準答案（刻意改量尺後才用）。
   2026-09-29 實測：增量 18.2 秒、冷編譯 31.8 秒。錄音在 `testdata/dump/`（不進版控），`testdata/expected.json` 要進版控。
 - **簽章**：預設 ad-hoc（`-`）＋Hardened Runtime，不需要任何憑證；代價是每次重新編譯後「系統音訊錄製」權限都要重新授權。
-  有 Apple Development 憑證的話設 `IN_UNISON42_SIGN_IDENTITY="Apple Development: 你的名字 (TEAMID)" ./build.sh`（`security find-identity -v -p codesigning` 查）：
+  有 Apple Development 憑證的話設 `IN_UNISON42_SIGN_IDENTITY="Apple Development: 你的名字 (TEAMID)" ./build.sh`（`security find-identity -v -p codesigning` 查）；也可以把身分寫在 `~/.config/in_unison42/sign_identity` 第一行，之後每次 build 自動套用：
   同一個身分簽的新版本，重新編譯、換位置（build/ → ~/Applications）後權限不會失效。
 - 第一次啟動會跳「系統音訊錄製」授權；第一次校正會跳「麥克風」授權。
 - **登入時打開**：面板底部勾選（或 `In_Unison42 ctl login-item on`）→ `SMAppService.mainApp` 註冊。app 必須在 `/Applications` 或 `~/Applications`。

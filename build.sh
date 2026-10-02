@@ -44,7 +44,12 @@ if (( INSTALL )); then
   if (( ! SIGN )); then echo "✗ --install 必須簽章（不能配 --no-sign）" >&2; exit 2; fi
 fi
 
-IDENTITY="${IN_UNISON42_SIGN_IDENTITY:--}"   # 預設 ad-hoc；正式簽章請設環境變數
+# 簽章身分：環境變數 > 本機設定檔（repo 外，第一行）> ad-hoc
+SIGN_IDENTITY_FILE="$HOME/.config/in_unison42/sign_identity"
+if [[ -z "${IN_UNISON42_SIGN_IDENTITY:-}" && -f "$SIGN_IDENTITY_FILE" ]]; then
+  IN_UNISON42_SIGN_IDENTITY="$(head -n 1 "$SIGN_IDENTITY_FILE")"
+fi
+IDENTITY="${IN_UNISON42_SIGN_IDENTITY:--}"
 APP=build/In_Unison42.app
 BIN="$APP/Contents/MacOS/In_Unison42"
 

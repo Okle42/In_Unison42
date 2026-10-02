@@ -51,7 +51,7 @@ open ~/Applications/In_Unison42.app
   and builds a separate copy with release flags to confirm that diagnostic commands and dangerous arguments are blocked (10 checks). Non-zero exit = regression; `--update-expected` regenerates the expected results (only after you deliberately change the measurement).
   Measured 2026-09-29: 18.2 s incremental, 31.8 s cold. The recordings live in `testdata/dump/` (not in version control); `testdata/expected.json` is versioned.
 - **Code signing**: ad-hoc (`-`) + Hardened Runtime by default, so no certificate is needed. The trade-off is that you have to re-grant the "System Audio Recording" permission after every rebuild.
-  If you have an Apple Development certificate, set `IN_UNISON42_SIGN_IDENTITY="Apple Development: Your Name (TEAMID)" ./build.sh` (find it with `security find-identity -v -p codesigning`):
+  If you have an Apple Development certificate, set `IN_UNISON42_SIGN_IDENTITY="Apple Development: Your Name (TEAMID)" ./build.sh` (find it with `security find-identity -v -p codesigning`) — or put that identity on the first line of `~/.config/in_unison42/sign_identity` so every build picks it up:
   new builds signed with the same identity keep the permission across rebuilds and moves (build/ → ~/Applications).
 - On first launch macOS asks for "System Audio Recording" permission; the first calibration asks for "Microphone" permission.
 - **Open at login**: tick the box at the bottom of the panel (or `In_Unison42 ctl login-item on`) → registered via `SMAppService.mainApp`. The app must be in `/Applications` or `~/Applications`.
