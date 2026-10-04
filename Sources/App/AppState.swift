@@ -302,7 +302,9 @@ final class AppState: ObservableObject {
         AppControl.shared.start()
         // 自動校正：已校正的藍牙在 app 重開後延遲可能改變（實測 35 ms）→ engine 開始前就先暫停出聲，第一次觀察時倒數重校
         let launchBT = Devices.bluetoothOutputs().filter { config.measuredLatencyMs($0.uid) != nil && config.device($0.uid).enabled }
-        if !launchBT.isEmpty {
+        if !launchBT.isEmpty && !Config.holdBluetoothOnRelaunch {
+            AppLog.line("自動校正：app 啟動，已校正的藍牙 \(launchBT.map(\.name).joined(separator: "、")) 沿用上次的延遲出聲（有人在聽音樂時自動短校正）")
+        } else if !launchBT.isEmpty {
             autoCal.primeLaunchHolds(launchBT.map(\.uid))
             AppLog.line("自動校正：app 啟動，已校正的藍牙 \(launchBT.map(\.name).joined(separator: "、")) 先不出聲，等重新校正")
             engine.applyConfig(engineConfig(config))   // engine 還沒 start：立即生效、不會卡
@@ -1227,6 +1229,7 @@ final class AppState: ObservableObject {
         env.programSilentSeconds = programSilentSeconds(now)
         env.secondsSinceLastGap = lastProgramGapAt.map { now.timeIntervalSince($0) } ?? .infinity
         env.playedBeforeSilence = playedBeforeSilence
+        env.programPlayingSeconds = programPlayingSince.map { now.timeIntervalSince($0) } ?? 0
         env.volumeGain = lastVolumeGain
         env.countdownBlocked = Set(autoCal.deferred.keys)
         env.targets = devices.filter { !$0.inAggregate }.map {

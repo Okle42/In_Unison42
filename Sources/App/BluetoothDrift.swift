@@ -447,6 +447,8 @@ struct ShortCalParams: Equatable {
     var maxWaitForGap: TimeInterval = 1800
     /// 一次沒量到，多久後再試
     var retrySeconds: TimeInterval = 300
+    /// 【2026-10-04】出聲中但這個串流還沒量過（app 重開後沿用上次的延遲）：節目音連續播了這麼久（＝有人在聽）就直接短校正
+    var firstPointPlayingSeconds: TimeInterval = 5
     /// 連續幾次沒量到 → 標記需要重新校正，**停止自動短校正**（等使用者按「需要校正」、或下一次量到／串流重開）
     var maxFailures = 3
     /// 找「預估誤差超過門檻」的時間點的步長（秒）
@@ -470,6 +472,8 @@ struct ShortCalEnvironment: Equatable {
     var playedBeforeSilence: TimeInterval = .infinity
     /// 距離上一次「可用的空檔」（連續靜止 ≥ silenceSeconds）結束幾秒 ＝ 已經連續播放多久（沒有空檔過）；很大 = app 啟動以來都沒有
     var secondsSinceLastGap: TimeInterval = .infinity
+    /// 節目音目前連續播了幾秒（0 = 沒在播）
+    var programPlayingSeconds: TimeInterval = 0
     /// 系統音量增益（0 = 靜音）
     var volumeGain: Float = 1
     /// AutoCalibrator 已經為它延後（needsConsent／取消）：不再倒數（空檔照樣可以跑）
@@ -529,6 +533,21 @@ final class ShortCalScheduler {
     func tick(now: Date, env: ShortCalEnvironment, models: [String: BluetoothDriftModel]) -> [ShortCalAction] {
         guard env.enabled else { dueSince = [:]; return [] }
         for t in env.targets {
+            // 【2026-10-04】出聲中、這個串流還沒有量測點（app 重開後沿用上次的延遲）：有人在聽就直接短校正（不倒數）。
+            // 「有人在聽」= 節目音連續播了 ≥ firstPointPlayingSeconds，或聽音樂中間的空檔——不在登入時、安靜的房間裡放測試音
+            if t.active, models[t.uid]?.points.isEmpty ?? true {
+                dueSince[t.uid] = nil
+                guard env.canStart, !stopped(t.uid), env.volumeGain >= params.minVolumeGain else { continue }
+                if let la = lastAttempt[t.uid], now.timeIntervalSince(la) < params.retrySeconds { continue }
+                let listening = env.programPlayingSeconds >= params.firstPointPlayingSeconds
+                    || (env.programSilentSeconds >= params.silenceSeconds && env.programSilentSeconds <= params.maxGapSilence
+                        && env.playedBeforeSilence >= params.minPlayingBeforeGap)
+                guard listening else { continue }
+                lastAttempt[t.uid] = now
+                lastStart = (t.uid, now, true)
+                return [.start(uid: t.uid, name: t.name, gap: true,
+                               reason: "這個串流還沒量過（沿用上次的延遲出聲中）；有人在聽音樂 → 直接短校正（不倒數）")]
+            }
             guard t.active, let m = models[t.uid], let due = dueAt(m) else { dueSince[t.uid] = nil; continue }
             guard now >= due.at else { dueSince[t.uid] = nil; continue }
             let since = dueSince[t.uid] ?? due.at
@@ -989,6 +1008,25 @@ func runDriftSelfTest() -> Int32 {
         check(ShortCalScheduler().tick(now: at(4), env: envQ, models: ["bt": mq]).isEmpty, "系統靜音：追蹤量測也不跑")
         var envB = env; envB.canStart = false
         check(ShortCalScheduler().tick(now: at(4), env: envB, models: ["bt": mq]).isEmpty, "正在校正／背景監聽：追蹤量測等一下")
+    }
+
+    print("── 4d. 還沒量過的串流（app 重開後沿用上次延遲出聲）：有人在聽才短校正 ──")
+    do {
+        var env = ShortCalEnvironment(); env.targets = [ShortCalTarget(uid: "bt", name: "GLASS5+", active: true)]
+        func gaps(_ a: [ShortCalAction]) -> [Bool] { a.compactMap { if case .start(_, _, let g, _) = $0 { return g } else { return nil } } }
+        let s = ShortCalScheduler()
+        env.programSilentSeconds = 30; env.playedBeforeSilence = 0; env.programPlayingSeconds = 0
+        check(s.tick(now: at(1), env: env, models: [:]).isEmpty, "登入後沒在播音樂：不放測試音")
+        env.programSilentSeconds = 0; env.programPlayingSeconds = 3
+        check(s.tick(now: at(2), env: env, models: [:]).isEmpty, "音樂才播 3 秒：再等等")
+        env.programPlayingSeconds = 6
+        let a = s.tick(now: at(3), env: env, models: [:])
+        check(gaps(a) == [true], "音樂連續播 6 秒（有人在聽）：直接短校正（不倒數）", "\(a)")
+        check(s.tick(now: at(4), env: env, models: [:]).isEmpty, "剛試過：5 分鐘內不重跑")
+        var envQ = env; envQ.volumeGain = 0
+        check(ShortCalScheduler().tick(now: at(3), env: envQ, models: [:]).isEmpty, "系統靜音：不跑")
+        var envOff = env; envOff.targets = [ShortCalTarget(uid: "bt", name: "GLASS5+", active: false)]
+        check(ShortCalScheduler().tick(now: at(3), env: envOff, models: [:]).isEmpty, "沒在出聲（暫停／關掉）：不跑")
     }
 
     print("── 5. 模擬：−0.78 ms／分鐘 60 分鐘，排程＋預測補償下的殘差 ──")

@@ -129,6 +129,10 @@ struct Config: Codable, Equatable {
     /// 【第 B 輪 2026-09-29 Kang 定案】藍牙真的斷線重連 → 比照 app 重開：先不出聲、倒數 3 秒、`--only` 重校
     /// （V8：A2DP 串流每次重開延遲差 35–61 ms）。false = 退回舊政策（沿用舊值出聲）
     static let recalibrateBluetoothOnReconnect = true
+    /// 【2026-10-04 Kang 定案】app 重開（含登入啟動、更新）後已校正的藍牙：false = 沿用上次的延遲照常出聲，
+    /// 等有人在聽音樂時自動短校正（ShortCalScheduler 的「還沒量過」路徑），之後接校正後追蹤量測；
+    /// true = 舊政策（先不出聲、倒數重校；通知沒開就一直等面板 → 實機常常整晚靜音）。真的斷線重連仍照 recalibrateBluetoothOnReconnect
+    static let holdBluetoothOnRelaunch = false
     static let trimDbRange: ClosedRange<Double> = -60...12
 
     /// 預設的自動模式對照（bundle id → 模式）。遊戲另有規則：Info.plist 的 LSApplicationCategoryType 是
@@ -159,6 +163,9 @@ struct Config: Codable, Equatable {
     var autoModeRules: [String: AudioMode] = Config.defaultAutoModeRules
     /// 校正用麥克風 UID；nil = 自動（Devices.microphone()）。可以是 Continuity（iPhone）麥克風——只准用於校正
     var calibrationMicUID: String? = nil
+    /// 【2026-10-04】脈衝校正偏好的參考喇叭（有線、和主時鐘同一個時鐘域）；nil = 主時鐘（內建喇叭）。
+    /// 完整校正時自動挑「峰值對旁瓣」最好的那台（內建喇叭在機殼裡，反射和直達一樣強 → 常撿到 +4 ms 的反射）；量不到就清掉、退回內建
+    var calibrationReferenceUID: String? = nil
     /// 各模式延遲上限
     var modeCaps: ModeCaps = ModeCaps()
     /// 【執行期，不存檔】自動校正（AppState／AutoCalibrator）暫停出聲的藍牙 uid：app 重開後、重新校正完成前不出聲
@@ -180,7 +187,7 @@ struct Config: Codable, Equatable {
 
     /// 存檔欄位（calibrationHolds 是執行期狀態，不在這裡 → 不寫進 config.json）
     private enum CodingKeys: String, CodingKey {
-        case version, devices, levelMatch, calibratedAt, mode, manualLock, autoModeRules, calibrationMicUID, modeCaps
+        case version, devices, levelMatch, calibratedAt, mode, manualLock, autoModeRules, calibrationMicUID, calibrationReferenceUID, modeCaps
         case monitorEnabled, monitorIntervalSec, monitorCaptureSec
         case bluetoothDriftCompensation, restoreDefaultOutputOnBluetoothConnect
     }
@@ -213,6 +220,7 @@ struct Config: Codable, Equatable {
             autoModeRules = Config.defaultAutoModeRules
         }
         calibrationMicUID = try c.decodeIfPresent(String.self, forKey: .calibrationMicUID)
+        calibrationReferenceUID = try? c.decodeIfPresent(String.self, forKey: .calibrationReferenceUID)
         modeCaps = (try? c.decodeIfPresent(ModeCaps.self, forKey: .modeCaps)) ?? ModeCaps()
         monitorEnabled = (try? c.decodeIfPresent(Bool.self, forKey: .monitorEnabled)) ?? true
         monitorIntervalSec = (try? c.decodeIfPresent(Double.self, forKey: .monitorIntervalSec)) ?? 300

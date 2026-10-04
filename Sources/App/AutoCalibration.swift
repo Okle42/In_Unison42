@@ -16,7 +16,7 @@
 //   * 「接上」＝上一次觀察不在、這一次在。第一次觀察（app 剛啟動）時已經在的未校正裝置不算接上：只列「需要校正」按鈕、不自動播測試音
 //     （避免每次登入都對一台麥克風聽不到的裝置播測試音）。
 //   * 「app 重開」＝藍牙在 app 啟動後 launchGrace（30 秒）內第一次出現（登入時藍牙常晚幾秒才連上）。之後才第一次出現的算「重新接上」→ 舊值。
-//   * 自動校正失敗／取消的裝置不自動重試（不會一直播測試音）；它斷線再接上才會再自動一次，或按「需要校正」。
+//   * 自動校正取消的裝置不自動重試；【2026-10-04】失敗（沒量到）的 1／3／10 分鐘後各自動重試一次（不倒數），3 次都沒量到才只留「需要校正」。
 //   * 參考喇叭（音量來源／內建）與使用者關掉的裝置不自動校正。
 import Foundation
 
@@ -162,6 +162,10 @@ final class AutoCalibrator {
     private(set) var queue: [AutoCalItem] = []
     /// 延後的（面板「需要校正」）：uid → (item, 原因)
     private(set) var deferred: [String: (item: AutoCalItem, reason: AutoCalDeferral)] = [:]
+    /// 【2026-10-04】校正失敗（沒量到）後的自動重試：每台已重試幾次、下次什麼時候。量到／斷線／取消就清掉
+    private(set) var failRetry: [String: (count: Int, at: Date)] = [:]
+    /// 失敗後第 1、2、3 次重試的等待時間（之後不再自動，留「需要校正」按鈕）
+    static let failRetryDelays: [TimeInterval] = [60, 180, 600]
     /// 校正完成前不出聲的藍牙
     private(set) var holds: Set<String> = []
     /// 上一次觀察到的裝置（nil = 還沒觀察過）
@@ -169,7 +173,12 @@ final class AutoCalibrator {
     /// 這個 app 行程裡看過的 uid
     private var seenEver: Set<String> = []
 
-    init(startedAt: Date = Date()) { self.startedAt = startedAt }
+    /// app 重開後的藍牙要不要先不出聲（預設 Config.holdBluetoothOnRelaunch；自測可以指定舊政策）
+    let holdOnRelaunch: Bool
+    init(startedAt: Date = Date(), holdOnRelaunch: Bool = Config.holdBluetoothOnRelaunch) {
+        self.startedAt = startedAt
+        self.holdOnRelaunch = holdOnRelaunch
+    }
 
     var isBusy: Bool { phase == .running || phase == .external }
 
@@ -204,7 +213,10 @@ final class AutoCalibrator {
             defer { seenEver.insert(d.uid) }
             guard d.enabled, !d.isReference else { continue }
             let relaunch = inGrace && !seenEver.contains(d.uid)
-            if d.isBluetooth && d.hasLatency && (relaunch || holds.contains(d.uid) || Config.recalibrateBluetoothOnReconnect) {
+            if d.isBluetooth && d.hasLatency && relaunch && !holdOnRelaunch && !holds.contains(d.uid) {
+                // 【2026-10-04】app 重開後：沿用上次的延遲出聲，不倒數；有人在聽時由漂移補償的短校正量第一點
+                acts.append(.log("自動校正：app 重新啟動後的藍牙「\(d.name)」→ 沿用上次的延遲出聲（有人在聽音樂時自動短校正）"))
+            } else if d.isBluetooth && d.hasLatency && (relaunch || holds.contains(d.uid) || Config.recalibrateBluetoothOnReconnect) {
                 // app 重開（或登入啟動）後第一次看到已校正的藍牙；暫停出聲中又重新接上；
                 // 【第 B 輪】藍牙真的斷線重連（或啟動 30 秒後才第一次連上）→ 一樣先不出聲、倒數重校
                 holds.insert(d.uid)
@@ -230,6 +242,7 @@ final class AutoCalibrator {
         for uid in prev.keys where byUID[uid] == nil {
             batch.removeAll { $0.uid == uid && !isBusy }
             queue.removeAll { $0.uid == uid }
+            failRetry[uid] = nil
             if deferred.removeValue(forKey: uid) != nil { acts.append(.log("自動校正：「\(prev[uid]!.name)」已斷線，取消待校正")) }
         }
         // 名稱更新；使用者把裝置關掉 → 不再排它
@@ -279,7 +292,21 @@ final class AutoCalibrator {
             if let r = micProblem(env) { return deferBatch(r) }
             acts += startIfPossible(env)
         case .idle:
-            // 麥克風空下來／接上了、使用者看得到倒數了 → 自動再倒數（取消、失敗的不自動重試）
+            // 【2026-10-04】失敗的自動重試：時間到、麥克風可用 → 直接跑（不倒數）
+            if micProblem(env) == nil {
+                let due = deferred.values.filter { e in
+                    if case .failed = e.reason, let r = failRetry[e.item.uid], r.at <= now, present?[e.item.uid] != nil { return true }
+                    return false
+                }.map(\.item)
+                if !due.isEmpty {
+                    for it in due { deferred.removeValue(forKey: it.uid) }
+                    batch = due
+                    phase = .waiting
+                    acts.append(.log("自動校正：自動重試 \(names(due).joined(separator: "、"))（第 \(due.compactMap { failRetry[$0.uid]?.count }.max() ?? 1) 次，不倒數）"))
+                    return acts
+                }
+            }
+            // 麥克風空下來／接上了、使用者看得到倒數了 → 自動再倒數（取消的不自動重試；失敗的走上面的重試）
             if micProblem(env) == nil && env.userCanSee {
                 let retry = deferred.values.filter { $0.reason.retriesAutomatically }.map(\.item)
                 if !retry.isEmpty {
@@ -335,6 +362,8 @@ final class AutoCalibrator {
         guard hasLatency, enabled else { return [] }
         let inGrace = now.timeIntervalSince(startedAt) < Self.launchGrace
         guard inGrace || Config.recalibrateBluetoothOnReconnect else { return [] }
+        // 【2026-10-04】app 重開：沿用上次的延遲出聲（不 hold、不倒數）
+        if inGrace && !holdOnRelaunch && !holds.contains(uid) { return [] }
         // 裝置清單觀察先到、已經排過又延後（needsConsent…）：只確保 holds，不重複排
         if deferred[uid] != nil && holds.contains(uid) { return [] }
         return holdAndEnqueue(uid: uid, name: name, why: inGrace ? .appRelaunch : .reconnect, now: now)
@@ -422,7 +451,7 @@ final class AutoCalibrator {
         let wasOurs = phase == .running
         // 量到的：不管是哪一批，都解除暫停出聲、拿掉延後／排隊
         holds.subtract(measured)
-        for u in measured { deferred.removeValue(forKey: u) }
+        for u in measured { deferred.removeValue(forKey: u); failRetry[u] = nil }
         queue.removeAll { measured.contains($0.uid) }
         if wasOurs {
             var ok: [String] = [], bad: [String] = []
@@ -433,6 +462,18 @@ final class AutoCalibrator {
                 // 漂移補償的短校正沒量到：不留「需要校正」（排程 5 分鐘後再試，連續 3 次才標記）；使用者按停止 → 照舊留按鈕
                 if it.why == .drift && !cancelled { continue }
                 deferred[it.uid] = (it, cancelled ? .cancelled : .failed(Self.failureText(message, bluetoothHeld: holds.contains(it.uid))))
+                // 【2026-10-04】沒量到（不是使用者停止）→ 1／3／10 分鐘後自動重試（直接跑，不再倒數：第一次已經倒數／同意過）。
+                // 實機：參考喇叭偶爾撿到反射就整次失敗，舊版只留按鈕 → 藍牙一直不出聲到有人按
+                if cancelled { failRetry[it.uid] = nil; continue }
+                let n = failRetry[it.uid]?.count ?? 0
+                if n < Self.failRetryDelays.count {
+                    failRetry[it.uid] = (n + 1, now.addingTimeInterval(Self.failRetryDelays[n]))
+                    acts.append(.log(String(format: "自動校正：「%@」沒量到 → %.0f 分鐘後自動重試（第 %d／%d 次）", it.name,
+                                            Self.failRetryDelays[n] / 60, n + 1, Self.failRetryDelays.count)))
+                } else {
+                    failRetry[it.uid] = (n, .distantFuture)   // 用完：不再排（count 留著，量到／斷線才清）
+                    acts.append(.log("自動校正：「\(it.name)」已自動重試 \(Self.failRetryDelays.count) 次都沒量到 → 停止自動重試（面板「需要校正」）"))
+                }
             }
             batch = []
             if !driftOnly || cancelled { acts.append(.finished(ok: ok, failed: bad, cancelled: cancelled)) }
@@ -556,7 +597,7 @@ func runAutoCalibrationSelfTest() -> Int32 {
 
     print("── 1. 新裝置（從未校正）接上：通知＋倒數 3 秒 → calibrate --pulse --only <uid> ──")
     do {
-        let a = AutoCalibrator(startedAt: t0)
+        let a = AutoCalibrator(startedAt: t0, holdOnRelaunch: true)
         var r = a.observe([builtin, msi, tv], now: at(1))
         check(starts(r).isEmpty && countdowns(r).isEmpty, "啟動時三台都校正過：沒有動作")
         r = a.observe([builtin, msi, tv, usb], now: at(100))
@@ -574,7 +615,7 @@ func runAutoCalibrationSelfTest() -> Int32 {
 
     print("── 2. 已有延遲紀錄的有線裝置重新接上：沿用舊值，不播測試音（藍牙見第 12 節） ──")
     do {
-        let a = AutoCalibrator(startedAt: t0)
+        let a = AutoCalibrator(startedAt: t0, holdOnRelaunch: true)
         _ = a.observe([builtin, msi, tv], now: at(1))
         _ = a.observe([builtin, tv], now: at(50))               // MSI 拔掉
         var r = a.observe([builtin, msi, tv], now: at(60))       // 插回
@@ -587,7 +628,7 @@ func runAutoCalibrationSelfTest() -> Int32 {
 
     print("── 3. app 重開（登入啟動）：已校正的藍牙 → 暫停出聲＋倒數 → 只量藍牙 ──")
     do {
-        let a = AutoCalibrator(startedAt: t0)
+        let a = AutoCalibrator(startedAt: t0, holdOnRelaunch: true)
         var r = a.observe([builtin, msi, tv, bt], now: at(2))
         check(holdsOf(r) == [bt.uid] && a.holds == [bt.uid], "啟動時藍牙已連：暫停出聲（holds）", "\(r)")
         check(countdowns(r) == [["GLASS5+"]], "倒數 3 秒")
@@ -597,7 +638,7 @@ func runAutoCalibrationSelfTest() -> Int32 {
         r = a.finished(measured: ["BuiltInSpeakerDevice", bt.uid], cancelled: false, message: "", now: at(40))
         check(holdsOf(r) == [] && a.holds.isEmpty, "量到 → 解除暫停出聲")
         // 登入時藍牙晚幾秒才連（30 秒內）：一樣算 app 重開
-        let b = AutoCalibrator(startedAt: t0)
+        let b = AutoCalibrator(startedAt: t0, holdOnRelaunch: true)
         _ = b.observe([builtin, msi, tv], now: at(1))
         r = b.observe([builtin, msi, tv, bt], now: at(12))
         check(b.holds == [bt.uid] && countdowns(r) == [["GLASS5+"]], "啟動後 12 秒才連上的藍牙：也暫停出聲並重校")
@@ -613,13 +654,13 @@ func runAutoCalibrationSelfTest() -> Int32 {
         r = b.observe([builtin, msi, tv, bt], now: at(110))
         check(countdowns(r) == [["GLASS5+"]] && b.holds == [bt.uid], "暫停出聲中重新接上：再倒數一次")
         // engine 開始前就先暫停出聲（primeLaunchHolds），第一次觀察才倒數
-        let p = AutoCalibrator(startedAt: t0)
+        let p = AutoCalibrator(startedAt: t0, holdOnRelaunch: true)
         p.primeLaunchHolds([bt.uid])
         check(p.holds == [bt.uid] && p.phase == .idle, "engine 開始前：已校正的藍牙先暫停出聲（還沒倒數）")
         r = p.observe([builtin, msi, tv, bt], now: at(3))
         check(countdowns(r) == [["GLASS5+"]] && holdsOf(r) == nil, "第一次觀察 → 倒數（holds 沒變，不必重送 engine）")
         // 未校正過的藍牙在啟動時已連：不暫停（本來就不出聲）、不自動
-        let c = AutoCalibrator(startedAt: t0)
+        let c = AutoCalibrator(startedAt: t0, holdOnRelaunch: true)
         r = c.observe([builtin, fresh(bt)], now: at(1))
         check(c.holds.isEmpty && countdowns(r).isEmpty && c.deferred[bt.uid]?.reason == .notCalibratedAtLaunch,
               "啟動時就在的未校正裝置：不自動播測試音，只留「需要校正」")
@@ -630,7 +671,7 @@ func runAutoCalibrationSelfTest() -> Int32 {
 
     print("── 4. 取消：延後、面板留「需要校正」；按了才校正 ──")
     do {
-        let a = AutoCalibrator(startedAt: t0)
+        let a = AutoCalibrator(startedAt: t0, holdOnRelaunch: true)
         _ = a.observe([builtin, msi], now: at(100))
         _ = a.observe([builtin, msi, usb], now: at(200))
         var r = a.tick(now: at(201), env: ok)
@@ -649,7 +690,7 @@ func runAutoCalibrationSelfTest() -> Int32 {
 
     print("── 5. 麥克風被其他 App 占用：延後並提示；空下來自動再倒數 ──")
     do {
-        let a = AutoCalibrator(startedAt: t0)
+        let a = AutoCalibrator(startedAt: t0, holdOnRelaunch: true)
         _ = a.observe([builtin], now: at(100))
         _ = a.observe([builtin, usb], now: at(200))
         var busy = ok; busy.micBusy = true
@@ -667,7 +708,7 @@ func runAutoCalibrationSelfTest() -> Int32 {
         r = a.tick(now: at(230), env: ok); r += a.tick(now: at(233), env: ok)
         check(starts(r) == [["usb"]], "空下來、倒數完 → 開始")
         var noMic = ok; noMic.micAvailable = false
-        let b = AutoCalibrator(startedAt: t0)
+        let b = AutoCalibrator(startedAt: t0, holdOnRelaunch: true)
         _ = b.observe([builtin], now: at(100)); _ = b.observe([builtin, usb], now: at(200))
         r = b.tick(now: at(201), env: noMic)
         check(deferrals(r) == [.noMic], "找不到校正麥克風 → 延後")
@@ -675,7 +716,7 @@ func runAutoCalibrationSelfTest() -> Int32 {
 
     print("── 6. 同一時間最多一個校正；多台同時出現 → 合併成一次 --only a,b ──")
     do {
-        let a = AutoCalibrator(startedAt: t0)
+        let a = AutoCalibrator(startedAt: t0, holdOnRelaunch: true)
         _ = a.observe([builtin], now: at(100))
         var r = a.observe([builtin, usb, usb2], now: at(200))
         check(countdowns(r) == [["USB 喇叭", "第二台 USB"]], "同一次觀察兩台 → 一次倒數")
@@ -683,7 +724,7 @@ func runAutoCalibrationSelfTest() -> Int32 {
         r = a.tick(now: at(203), env: ok)
         check(starts(r) == [["usb", "usb2"]], "--only usb,usb2", "\(r)")
         // 倒數中又來一台 → 合併、重新倒數 3 秒
-        let b = AutoCalibrator(startedAt: t0)
+        let b = AutoCalibrator(startedAt: t0, holdOnRelaunch: true)
         _ = b.observe([builtin], now: at(100))
         _ = b.observe([builtin, usb], now: at(200))
         r = b.observe([builtin, usb, usb2], now: at(202))
@@ -693,7 +734,7 @@ func runAutoCalibrationSelfTest() -> Int32 {
         r = b.tick(now: at(205), env: ok)
         check(starts(r) == [["usb", "usb2"]], "合併成一次")
         // 執行中又來一台 → 排隊，結束後再一次
-        let c = AutoCalibrator(startedAt: t0)
+        let c = AutoCalibrator(startedAt: t0, holdOnRelaunch: true)
         _ = c.observe([builtin], now: at(100))
         _ = c.observe([builtin, usb], now: at(200)); _ = c.tick(now: at(203), env: ok)
         check(c.phase == .running, "第一批執行中")
@@ -706,7 +747,7 @@ func runAutoCalibrationSelfTest() -> Int32 {
         r = c.tick(now: at(233), env: ok)
         check(starts(r) == [["usb2"]], "第二批 --only usb2")
         // 使用者自己按「開始校正」（全部量）：倒數中的先擱著，量到就不用再量
-        let d = AutoCalibrator(startedAt: t0)
+        let d = AutoCalibrator(startedAt: t0, holdOnRelaunch: true)
         _ = d.observe([builtin], now: at(100)); _ = d.observe([builtin, usb], now: at(200))
         d.externalRunStarted()
         r = d.tick(now: at(210), env: ok)
@@ -714,7 +755,7 @@ func runAutoCalibrationSelfTest() -> Int32 {
         r = d.finished(measured: ["BuiltInSpeakerDevice", "usb"], cancelled: false, message: "", now: at(230))
         check(countdowns(r).isEmpty && d.phase == .idle && d.queue.isEmpty, "全部校正量到它 → 不用再自動校正")
         // canRun = false（引擎還沒好）→ 等
-        let e = AutoCalibrator(startedAt: t0)
+        let e = AutoCalibrator(startedAt: t0, holdOnRelaunch: true)
         _ = e.observe([builtin], now: at(100)); _ = e.observe([builtin, usb], now: at(200))
         var notReady = ok; notReady.canRun = false
         r = e.tick(now: at(203), env: notReady)
@@ -725,7 +766,7 @@ func runAutoCalibrationSelfTest() -> Int32 {
 
     print("── 7. 不自動校正的：參考喇叭、使用者關掉的、倒數中拔掉的 ──")
     do {
-        let a = AutoCalibrator(startedAt: t0)
+        let a = AutoCalibrator(startedAt: t0, holdOnRelaunch: true)
         _ = a.observe([], now: at(100))
         let refFresh = fresh(builtin)
         let off = AutoCalDevice(uid: "off", name: "關掉的", isBluetooth: false, hasLatency: false, enabled: false, isReference: false)
@@ -746,7 +787,7 @@ func runAutoCalibrationSelfTest() -> Int32 {
 
     print("── 9. 暫停出聲中被使用者關掉再打開：放回「需要校正」（2026-09-29 審查） ──")
     do {
-        let a = AutoCalibrator(startedAt: t0)
+        let a = AutoCalibrator(startedAt: t0, holdOnRelaunch: true)
         _ = a.observe([builtin, msi, tv, bt], now: at(2))
         _ = a.tick(now: at(5), env: ok)
         _ = a.finished(measured: [], cancelled: true, message: "", now: at(20))
@@ -766,7 +807,7 @@ func runAutoCalibrationSelfTest() -> Int32 {
         r = a.finished(measured: [bt.uid], cancelled: false, message: "", now: at(100))
         check(a.holds.isEmpty && a.deferred.isEmpty, "量到 → 解除暫停出聲")
         // 關著時接上的未校正裝置，之後打開 → 「尚未校正」
-        let b = AutoCalibrator(startedAt: t0)
+        let b = AutoCalibrator(startedAt: t0, holdOnRelaunch: true)
         _ = b.observe([builtin], now: at(1))
         let usbOff = AutoCalDevice(uid: usb.uid, name: usb.name, isBluetooth: false, hasLatency: false, enabled: false, isReference: false)
         _ = b.observe([builtin, usbOff], now: at(100))
@@ -778,7 +819,7 @@ func runAutoCalibrationSelfTest() -> Int32 {
     print("── 10. 使用者看不到倒數（面板關著、通知沒授權）：不自動播測試音（2026-09-29 審查） ──")
     do {
         var blind = AutoCalEnvironment(); blind.userCanSee = false
-        let a = AutoCalibrator(startedAt: t0)
+        let a = AutoCalibrator(startedAt: t0, holdOnRelaunch: true)
         var r = a.observe([builtin, msi, tv, bt], now: at(2))
         check(countdowns(r) == [["GLASS5+"]], "app 重開：狀態機照常進倒數")
         r = a.tick(now: at(2.25), env: blind)
@@ -791,7 +832,7 @@ func runAutoCalibrationSelfTest() -> Int32 {
         r = a.tick(now: at(23), env: ok)
         check(starts(r) == [[bt.uid]], "倒數完開始")
         // 使用者自己按（ctl autocal now／面板按鈕）：不需要通知權限
-        let b = AutoCalibrator(startedAt: t0)
+        let b = AutoCalibrator(startedAt: t0, holdOnRelaunch: true)
         _ = b.observe([builtin], now: at(1))
         _ = b.observe([builtin, usb], now: at(100))
         _ = b.tick(now: at(100.25), env: blind)
@@ -805,7 +846,7 @@ func runAutoCalibrationSelfTest() -> Int32 {
     print("── 12. 藍牙真的斷線重連（第 B 輪 Kang 定案）：比照 app 重開——先不出聲、倒數 3 秒、--only 重校 ──")
     do {
         check(Config.recalibrateBluetoothOnReconnect, "政策開關：重連要重校")
-        let a = AutoCalibrator(startedAt: t0)
+        let a = AutoCalibrator(startedAt: t0, holdOnRelaunch: true)
         _ = a.observe([builtin, msi, tv], now: at(1))
         // 啟動 30 秒後才第一次連上（登入後很久才連）→ 也當成串流重開：先不出聲、重校
         var r = a.observe([builtin, msi, tv, bt], now: at(200))
@@ -838,20 +879,20 @@ func runAutoCalibrationSelfTest() -> Int32 {
         r = a.bluetoothReconnected(uid: "bt2", name: "第二台藍牙", hasLatency: true, enabled: true, now: at(405))
         check(a.queue.map(\.uid) == ["bt2"] && starts(r).isEmpty, "執行中又有一台重連 → 排隊", "\(r)")
         // 沒量過延遲／關掉的：不動（本來就不出聲）
-        let b = AutoCalibrator(startedAt: t0)
+        let b = AutoCalibrator(startedAt: t0, holdOnRelaunch: true)
         check(b.bluetoothReconnected(uid: "x", name: "x", hasLatency: false, enabled: true, now: at(100)).isEmpty
               && b.bluetoothReconnected(uid: "y", name: "y", hasLatency: true, enabled: false, now: at(100)).isEmpty && b.holds.isEmpty,
               "沒量過延遲／使用者關掉的藍牙：不暫停、不校正")
         // 【2026-09-29 審查】啟動 30 秒後才「第一次」連上（BluetoothOutManager.onFirstConnect，engine 已先 hold）：
         // 在裝置清單觀察之前就暫停出聲＋倒數；之後的 observe 不重複排
-        let f = AutoCalibrator(startedAt: t0)
+        let f = AutoCalibrator(startedAt: t0, holdOnRelaunch: true)
         _ = f.observe([builtin, msi, tv], now: at(1))
         r = f.bluetoothFirstConnected(uid: bt.uid, name: bt.name, hasLatency: true, enabled: true, now: at(200))
         check(holdsOf(r) == [bt.uid] && countdowns(r) == [["GLASS5+"]] && f.batch.first?.why == .reconnect,
               "啟動 30 秒後第一次連上（onFirstConnect 先到）：暫停出聲＋倒數（同重連）", "\(r)")
         r = f.observe([builtin, msi, tv, bt], now: at(200.8))
         check(countdowns(r).isEmpty && holdsOf(r) == nil && f.batch.count == 1, "之後裝置清單才看到它：不重複排", "\(r)")
-        let g = AutoCalibrator(startedAt: t0)
+        let g = AutoCalibrator(startedAt: t0, holdOnRelaunch: true)
         g.primeLaunchHolds([bt.uid])
         r = g.bluetoothFirstConnected(uid: bt.uid, name: bt.name, hasLatency: true, enabled: true, now: at(2))
         check(countdowns(r) == [["GLASS5+"]] && g.batch.first?.why == .appRelaunch && holdsOf(r) == nil,
@@ -859,7 +900,7 @@ func runAutoCalibrationSelfTest() -> Int32 {
         r = g.observe([builtin, msi, tv, bt], now: at(2.5))
         check(countdowns(r).isEmpty && g.batch.count == 1, "第一次觀察：不重複排", "\(r)")
         // 2026-09-29 實機：通知沒授權 → onFirstConnect 先排、立刻延後（needsConsent），接著第一次觀察不可以再排一次
-        let n = AutoCalibrator(startedAt: t0)
+        let n = AutoCalibrator(startedAt: t0, holdOnRelaunch: true)
         n.primeLaunchHolds([bt.uid])
         var blindN = AutoCalEnvironment(); blindN.userCanSee = false
         _ = n.bluetoothFirstConnected(uid: bt.uid, name: bt.name, hasLatency: true, enabled: true, now: at(1))
@@ -870,13 +911,13 @@ func runAutoCalibrationSelfTest() -> Int32 {
         check(countdowns(r).isEmpty && deferrals(r).isEmpty && !r.contains { if case .log = $0 { return true } else { return false } } && n.holds == [bt.uid],
               "之後第一次觀察：不重複排、不重複延後（沒有重複 log）", "\(r)")
         // 反過來：觀察先到、已延後，onFirstConnect 才到 → 不重複
-        let m = AutoCalibrator(startedAt: t0)
+        let m = AutoCalibrator(startedAt: t0, holdOnRelaunch: true)
         m.primeLaunchHolds([bt.uid])
         _ = m.observe([builtin, msi, tv, bt], now: at(1))
         _ = m.tick(now: at(1.01), env: blindN)
         r = m.bluetoothFirstConnected(uid: bt.uid, name: bt.name, hasLatency: true, enabled: true, now: at(1.02))
         check(r.isEmpty && m.deferred[bt.uid] != nil && m.holds == [bt.uid], "觀察先到已延後、onFirstConnect 後到：不重複", "\(r)")
-        let h = AutoCalibrator(startedAt: t0)
+        let h = AutoCalibrator(startedAt: t0, holdOnRelaunch: true)
         check(h.bluetoothFirstConnected(uid: "x", name: "x", hasLatency: false, enabled: true, now: at(200)).isEmpty
               && h.bluetoothFirstConnected(uid: "y", name: "y", hasLatency: true, enabled: false, now: at(200)).isEmpty && h.holds.isEmpty,
               "第一次連上但沒量過／關掉：不暫停（AppState 直接放掉 engine 的暫時 hold）")
@@ -884,7 +925,7 @@ func runAutoCalibrationSelfTest() -> Int32 {
 
     print("── 13. 背景監聽標記需要重新校正＋選單列提示 ──")
     do {
-        let a = AutoCalibrator(startedAt: t0)
+        let a = AutoCalibrator(startedAt: t0, holdOnRelaunch: true)
         _ = a.observe([builtin, msi, tv], now: at(1))
         check(!a.needsAttention, "平常：不提示")
         var r = a.flagNeedsCalibration(uid: "tv", name: "電視", reason: "背景監聽連續 2 次量到「電視」偏 +12.0 ms")
@@ -898,7 +939,7 @@ func runAutoCalibrationSelfTest() -> Int32 {
         check(starts(r) == [["tv"]], "按「立即校正」→ --only 電視", "\(r)")
         _ = a.finished(measured: ["tv"], cancelled: false, message: "", now: at(40))
         check(!a.needsAttention, "量到 → 提示消失")
-        let b = AutoCalibrator(startedAt: t0)
+        let b = AutoCalibrator(startedAt: t0, holdOnRelaunch: true)
         _ = b.observe([builtin, bt], now: at(1))
         check(b.needsAttention, "暫停出聲等校正的藍牙（倒數中）也提示")
     }
@@ -906,7 +947,7 @@ func runAutoCalibrationSelfTest() -> Int32 {
     print("── 14. 【第 C 輪】藍牙漂移補償的短校正：空檔不倒數、連續播放太久才倒數（看不到 → needsConsent）、失敗不留按鈕、不發完成通知 ──")
     do {
         func finishedActs(_ a: [AutoCalAction]) -> Int { a.filter { if case .finished = $0 { return true } else { return false } }.count }
-        let a = AutoCalibrator(startedAt: t0)
+        let a = AutoCalibrator(startedAt: t0, holdOnRelaunch: true)
         _ = a.observe([builtin, msi, tv, bt], now: at(1))
         _ = a.tick(now: at(4), env: ok)
         _ = a.finished(measured: [bt.uid], cancelled: false, message: "", now: at(40))   // 啟動重校完成
@@ -931,7 +972,7 @@ func runAutoCalibrationSelfTest() -> Int32 {
         r = a.tick(now: at(2010), env: ok)
         check(countdowns(r) == [["GLASS5+"]], "面板打開 → 倒數", "\(r)")
         // 麥克風被占用：空檔的短校正直接放掉（不變成「空下來自動倒數」）
-        let b = AutoCalibrator(startedAt: t0)
+        let b = AutoCalibrator(startedAt: t0, holdOnRelaunch: true)
         _ = b.observe([builtin, msi, tv, bt], now: at(1))
         _ = b.tick(now: at(4), env: ok)
         _ = b.finished(measured: [bt.uid], cancelled: false, message: "", now: at(40))
@@ -944,7 +985,7 @@ func runAutoCalibrationSelfTest() -> Int32 {
         _ = b.requestNow(now: at(500))
         check(!b.batchIsDriftOnly && b.batch.first?.why == .manual, "按「需要校正」：一般項目（不是漂移補償的短校正）")
         // 【第 C 輪審查】「需要校正」（背景監聽連續量不到、漂移不規則…）不能被空檔短校正悄悄抹掉
-        let d = AutoCalibrator(startedAt: t0)
+        let d = AutoCalibrator(startedAt: t0, holdOnRelaunch: true)
         _ = d.observe([builtin, msi, tv, bt], now: at(1))
         _ = d.tick(now: at(4), env: ok)
         _ = d.finished(measured: [bt.uid], cancelled: false, message: "", now: at(40))
@@ -962,10 +1003,65 @@ func runAutoCalibrationSelfTest() -> Int32 {
         _ = d.finished(measured: [bt.uid, builtin.uid], cancelled: false, message: "", now: at(710))
         check(d.deferred[bt.uid] == nil && !d.needsAttention, "短校正量到（真的校正過了）：「需要校正」解除")
         // 其他校正在倒數中：不插隊
-        let c = AutoCalibrator(startedAt: t0)
+        let c = AutoCalibrator(startedAt: t0, holdOnRelaunch: true)
         _ = c.observe([builtin, msi, tv], now: at(1))
         _ = c.observe([builtin, msi, tv, usb], now: at(5))
         check(c.requestDriftCalibration(uid: bt.uid, name: bt.name, countdown: false, now: at(5.5)).isEmpty, "有其他校正在倒數：不插隊")
+    }
+
+    print("── 2026-10-04 自動校正失敗：1／3／10 分鐘後自動重試（不倒數），3 次後停；取消不重試；量到就清掉 ──")
+    do {
+        let a = AutoCalibrator(startedAt: t0, holdOnRelaunch: true)
+        _ = a.observe([builtin, msi, tv, bt], now: at(1))
+        _ = a.tick(now: at(4), env: ok)                     // 倒數結束 → 開始
+        var r = a.finished(measured: [], cancelled: false, message: "參考喇叭量測不穩", now: at(40))
+        check(a.failRetry[bt.uid]?.count == 1 && a.deferred[bt.uid] != nil && a.holds.contains(bt.uid), "失敗：留「需要校正」、排第 1 次重試、仍暫停出聲", "\(r)")
+        check(a.tick(now: at(90), env: ok).isEmpty, "還不到 1 分鐘：不重試")
+        r = a.tick(now: at(101), env: ok)
+        check(a.phase == .waiting && a.batch.map(\.uid) == [bt.uid] && countdowns(r).isEmpty, "1 分鐘到：直接重試（不倒數）", "\(r)")
+        r = a.tick(now: at(101.5), env: ok)
+        check(starts(r) == [[bt.uid]], "重試開始 --only 藍牙", "\(r)")
+        _ = a.finished(measured: [], cancelled: false, message: "", now: at(110))
+        check(a.failRetry[bt.uid]?.count == 2, "第 2 次失敗：排 3 分鐘後")
+        _ = a.tick(now: at(291), env: ok); _ = a.tick(now: at(291.5), env: ok)
+        _ = a.finished(measured: [], cancelled: false, message: "", now: at(300))
+        _ = a.tick(now: at(901), env: ok); _ = a.tick(now: at(901.5), env: ok)
+        r = a.finished(measured: [], cancelled: false, message: "", now: at(910))
+        check(a.failRetry[bt.uid]?.count == 3 && "\(r)".contains("停止自動重試"), "重試 3 次都沒量到：停止自動重試", "\(r)")
+        check(a.tick(now: at(5000), env: ok).isEmpty && a.deferred[bt.uid] != nil, "之後不再自動跑，只留「需要校正」")
+        // 重試中量到 → 清掉
+        let b = AutoCalibrator(startedAt: t0, holdOnRelaunch: true)
+        _ = b.observe([builtin, msi, tv, bt], now: at(1))
+        _ = b.tick(now: at(4), env: ok)
+        _ = b.finished(measured: [], cancelled: false, message: "", now: at(40))
+        _ = b.tick(now: at(101), env: ok); _ = b.tick(now: at(101.5), env: ok)
+        _ = b.finished(measured: [bt.uid, builtin.uid], cancelled: false, message: "", now: at(110))
+        check(b.failRetry[bt.uid] == nil && b.deferred[bt.uid] == nil && !b.holds.contains(bt.uid), "重試量到：解除暫停、清掉重試與「需要校正」")
+        // 使用者停止 → 不重試
+        let c = AutoCalibrator(startedAt: t0, holdOnRelaunch: true)
+        _ = c.observe([builtin, msi, tv, bt], now: at(1))
+        _ = c.tick(now: at(4), env: ok)
+        _ = c.finished(measured: [], cancelled: true, message: "", now: at(20))
+        check(c.failRetry[bt.uid] == nil && c.tick(now: at(1000), env: ok).isEmpty, "使用者按停止：不自動重試")
+    }
+
+    print("── 2026-10-04 app 重開後的藍牙：沿用上次的延遲出聲（不暫停、不倒數；有人在聽時由漂移補償短校正量第一點） ──")
+    do {
+        let a = AutoCalibrator(startedAt: t0, holdOnRelaunch: false)
+        let r = a.observe([builtin, msi, tv, bt], now: at(1))
+        check(a.holds.isEmpty && countdowns(r).isEmpty && a.batch.isEmpty && a.deferred.isEmpty, "啟動時藍牙已連：不暫停出聲、不倒數", "\(r)")
+        check(a.bluetoothFirstConnected(uid: bt.uid, name: bt.name, hasLatency: true, enabled: true, now: at(2)).isEmpty && a.holds.isEmpty,
+              "第一次連上（啟動 30 秒內）：一樣不暫停")
+        // 啟動 30 秒後才第一次連上 = 串流重開：照舊暫停＋倒數
+        let b = AutoCalibrator(startedAt: t0, holdOnRelaunch: false)
+        _ = b.observe([builtin, msi, tv], now: at(1))
+        let r2 = b.bluetoothFirstConnected(uid: bt.uid, name: bt.name, hasLatency: true, enabled: true, now: at(60))
+        check(b.holds.contains(bt.uid) && !countdowns(r2).isEmpty, "啟動 30 秒後才連上（串流重開）：照舊暫停出聲＋倒數", "\(r2)")
+        // 真的斷線重連：照舊
+        let c = AutoCalibrator(startedAt: t0, holdOnRelaunch: false)
+        _ = c.observe([builtin, msi, tv, bt], now: at(1))
+        _ = c.bluetoothReconnected(uid: bt.uid, name: bt.name, hasLatency: true, enabled: true, now: at(100))
+        check(c.holds.contains(bt.uid), "真的斷線重連：照舊暫停出聲")
     }
 
     print(fail == 0 ? "autocal-selftest：全部通過 ✓\(pass) ✗0" : "autocal-selftest：✓\(pass) ✗\(fail)")

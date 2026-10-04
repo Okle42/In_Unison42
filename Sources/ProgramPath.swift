@@ -63,6 +63,12 @@ enum PPParams {
     static let writeMinCluster = 3
     /// 【2026-10-04】參考喇叭直線擬合：偏離超過這個（ms）的脈衝當離群（反射）剔除後重擬合（ppRobustFit）
     static let refOutlierMs = 1.0
+    /// 【2026-10-04】有線裝置反射感知：晚到那組比早到那組晚這個範圍（ms）才當成反射（內建喇叭實測 +3.8 ms）
+    static let refReflectionMinMs = 2.0
+    static let refReflectionMaxMs = 6.0
+    /// 【2026-10-04】換參考喇叭的條件：候選的峰值對旁瓣（中位數）比目前參考好這麼多 dB、最小 SNR ≥ refMinSnrDb、有效脈衝 ≥ 4
+    static let refSwitchMarginDb = 3.0
+    static let refMinSnrDb = 10.0
     /// 【2026-09-29 第二版】柔和版測試音：粉紅雜訊、只含 1–4 kHz、80 ms、RMS −22 dBFS（原白雜訊 −20）。
     /// 「延遲」定義成 1–4 kHz 的群延遲：GCC-PHAT 只用 1–4 kHz，取**包絡**（解析訊號絕對值）的峰值，不取載波峰——
     /// 1–4 kHz 的載波週期 0.25–1 ms，取載波峰會在相鄰週期間跳（就是以前 0.4–1.4 ms 的雙值）；包絡峰＝這個頻帶的群延遲，
@@ -1297,8 +1303,22 @@ func runVerifyProgramPath(engine: Engine, micQuery: String? = nil, mode: PlayMod
     }
 
     guard var info = ppActiveOutputs(engine, mode: mode) else { return 1 }
+    // 【2026-10-04】參考喇叭：設定裡有偏好（上次完整校正量到反射最少的有線喇叭）而且它在出聲、有延遲值 → 用它；否則主時鐘（內建）
+    var refIdx: Int? = info.active.contains(info.clock) ? info.clock : info.active.first
+    var usingPrefRef = false
+    if let pref = origCfg.calibrationReferenceUID, pref != info.outs[info.clock].uid,
+       let o = info.active.first(where: { info.outs[$0].uid == pref && !info.outs[$0].isExternal }),
+       origCfg.measuredLatencyMs(pref) != nil, !(onlyUIDs?.contains(pref) ?? false) {
+        refIdx = o; usingPrefRef = true
+        print("參考喇叭：「\(info.outs[o].name)」（上次完整校正量到它的反射最少；這次量不準就自動退回「\(info.outs[info.clock].name)」）")
+    }
+    /// 偏好的參考這次量不準：清掉偏好（下次退回內建），讓 app 的重試用內建喇叭
+    func refFailed() {
+        guard usingPrefRef, let o = refIdx else { return }
+        ppDropReferencePref(info.outs[o].name, fallback: info.outs[info.clock].name)
+    }
     if let u = onlyUIDs {
-        let clk = info.active.contains(info.clock) ? info.clock : info.active.first
+        let clk = refIdx
         for q in u where !info.outs.contains(where: { $0.uid == q && info.active.contains($0.index) }) {
             print("✗ --only 指定的「\(info.outs.first { $0.uid == q }?.name ?? q)」不在出聲清單（已關閉、或藍牙沒有啟動）"); return 1
         }
@@ -1310,7 +1330,9 @@ func runVerifyProgramPath(engine: Engine, micQuery: String? = nil, mode: PlayMod
     guard info.active.count >= 2 else {
         print(write ? "只有 \(info.active.count) 台出聲，不需要校正" : "\(mode.label)模式下只有 \(info.active.count) 台出聲，不需要驗證"); return 0
     }
-    let clock = info.active.contains(info.clock) ? info.clock : info.active[0]
+    let clock = refIdx.flatMap { info.active.contains($0) ? $0 : nil } ?? info.active[0]
+    // app 的漂移模型一律以主時鐘（內建）為基準：參考換成別台時，@@latency-obs 加上「參考 − 主時鐘」的延遲（設定檔的值）換算回去
+    let refToClockMs = (origCfg.measuredLatencyMs(info.outs[clock].uid) ?? 0) - (origCfg.measuredLatencyMs(info.outs[info.clock].uid) ?? 0)
     if let u = onlyUIDs, u.contains(info.outs[clock].uid) { print("✗ --only 指定的是參考喇叭「\(info.outs[clock].name)」本身（它的延遲定義為基準，不用量）"); return 2 }
     // 【第 C 輪】短量測：--only 只有一台藍牙、它有上次的延遲值、沒有 --full
     var short: PPShortPlan? = nil
@@ -1404,9 +1426,20 @@ func runVerifyProgramPath(engine: Engine, micQuery: String? = nil, mode: PlayMod
         }
         if let msg { bad.append(msg); badTargets.insert(pulses[k].output); badByTarget[pulses[k].output, default: []].append(msg) }
     }
+    // 【2026-10-04】參考喇叭少數脈衝 SNR 不夠（被音樂／雜訊蓋過）：只剔除那幾個，剩 ≥ max(4, 一半) 就照常（舊版整次作廢：
+    // 23:14 實機 10 個裡 1 個 3.4 dB → 失敗，連「下次改用別台當參考」都沒機會記）
+    let refAll = pulses.indices.filter { pulses[$0].output == clock && !pulses[$0].discard }
+    let refLow = Set(refAll.filter { locs[$0] == nil || locs[$0]!.snr < PPParams.minSnrDb })
+    if !refLow.isEmpty, refAll.count - refLow.count >= max(4, (refAll.count + 1) / 2) {
+        for b in badByTarget[clock] ?? [] { print("⚠ \(b)（參考喇叭：剔除這個脈衝，其餘 \(refAll.count - refLow.count) 個照用）") }
+        let drop = Set(badByTarget[clock] ?? [])
+        bad.removeAll { drop.contains($0) }
+        badByTarget[clock] = nil
+        badTargets.remove(clock)
+    }
     // 主時鐘喇叭的脈衝擬合直線（麥克風時間軸：吸收漂移）
-    let ck = pulses.indices.filter { pulses[$0].output == clock && locs[$0] != nil }
-    guard ck.count >= 4 else { print("✗ 參考喇叭的脈衝不足：\(bad)"); return 1 }
+    let ck = refAll.filter { locs[$0] != nil && !refLow.contains($0) }
+    guard ck.count >= 4 else { print("✗ 參考喇叭的脈衝不足：\(bad)"); refFailed(); return 1 }
     let fit = ppRobustFit(ck.map(Double.init), ck.map { locs[$0]!.pos }, tolFrames: PPParams.refOutlierMs / 1000 * cap.micRate)
     let ppm = (fit.b / Double(cap.periodFrames) * PPParams.rate / cap.micRate - 1) * 1e6
     print(String(format: "  參考喇叭（%@）直線擬合：週期 %.3f 麥克風 frame（名目 %d）→ 麥克風時鐘差 %.1f ppm", cap.names[clock], fit.b, cap.periodFrames, ppm))
@@ -1415,7 +1448,7 @@ func runVerifyProgramPath(engine: Engine, micQuery: String? = nil, mode: PlayMod
         // 只量藍牙的驗證：補償歸 0 量到的相對延遲 vs app 目前用的（校正值＋背景監聽／漂移補償的延遲修正）
         guard !badTargets.contains(clock) else {
             for b in badByTarget[clock] ?? [] { print("✗ \(b)") }
-            print("✗ 參考喇叭「\(info.outs[clock].name)」有不合格的脈衝，這次量不準"); return 1
+            print("✗ 參考喇叭「\(info.outs[clock].name)」有不合格的脈衝，這次量不準"); refFailed(); return 1
         }
         let uid = info.outs[o].uid, refUID = info.outs[clock].uid
         let refRes = ck.map(resMs)
@@ -1432,7 +1465,7 @@ func runVerifyProgramPath(engine: Engine, micQuery: String? = nil, mode: PlayMod
         let ok = abs(resid) < PPParams.toleranceExternalMs
         print(String(format: "%@ 藍牙「%@」只量藍牙的驗證：量到相對延遲 %+.3f ms；app 目前用 %+.3f ms（校正值 %.3f、延遲修正 %+.3f）→ 殘差 %+.3f ms（正＝藍牙晚到；門檻 %.0f ms）",
                      ok ? "✓" : "✗", info.outs[o].name, meas, assumed, mBT - mRef, (corr[uid] ?? 0) - (corr[refUID] ?? 0), resid, PPParams.toleranceExternalMs))
-        print(String(format: "@@latency-obs %@ %.4f %.4f %d verify", uid, meas, sel.spread, sel.kept.count))
+        print(String(format: "@@latency-obs %@ %.4f %.4f %d verify", uid, meas + refToClockMs, sel.spread, sel.kept.count))
         print(String(format: "@@bt-residual %@ %.4f", uid, resid))
         if ok { print("✓ 只量藍牙的驗證通過（殘差 < \(Int(PPParams.toleranceExternalMs)) ms）") }
         return ok ? 0 : 1
@@ -1462,6 +1495,7 @@ func runVerifyProgramPath(engine: Engine, micQuery: String? = nil, mode: PlayMod
 
     var rows: [(String, Double, Double, [Double], Double)] = []
     var means: [Double] = []
+    var refQuality: [Int: (psrMed: Double, snrMin: Double, n: Int)] = [:]
     for o in info.active {
         let ks = pulses.indices.filter { pulses[$0].output == o && locs[$0] != nil && !pulses[$0].discard }
         let res = ks.map { (locs[$0]!.pos - (fit.a + fit.b * Double($0))) / cap.micRate * 1000 }
@@ -1469,6 +1503,8 @@ func runVerifyProgramPath(engine: Engine, micQuery: String? = nil, mode: PlayMod
         let spread = (res.max() ?? 0) - (res.min() ?? 0)
         let snr = ks.map { locs[$0]!.snr }.min() ?? 0
         let psr = ks.map { locs[$0]!.psr }.min() ?? 0
+        let psrs = ks.map { locs[$0]!.psr }.sorted()
+        if !info.outs[o].isExternal, !psrs.isEmpty { refQuality[o] = (psrs[psrs.count / 2], snr, ks.count) }
         rows.append((cap.names[o] + (o == clock ? "（參考）" : ""), mean0, spread, res, snr))
         let sides = ks.map { locs[$0]!.sideMs }.sorted()
         let sideMed = sides.isEmpty ? .nan : sides[sides.count / 2]
@@ -1545,13 +1581,29 @@ func runVerifyProgramPath(engine: Engine, micQuery: String? = nil, mode: PlayMod
             let sel = ppExternalCluster(good)
             guard sel.ok, means[kRef].isFinite else { continue }
             let rel = (sel.mean - means[kRef]) - ((info.delays[o] ?? 0) - (info.delays[clock] ?? 0))
-            print(String(format: "@@latency-obs %@ %.4f %.4f %d verify", info.outs[o].uid, rel, sel.spread, sel.kept.count))
+            print(String(format: "@@latency-obs %@ %.4f %.4f %d verify", info.outs[o].uid, rel + refToClockMs, sel.spread, sel.kept.count))
+        }
+    }
+    // 【2026-10-04】完整校正：挑反射最少（峰值對旁瓣中位數最高）的有線喇叭當下次的參考（比目前的好 ≥ 3 dB 才換）
+    var refPref: String?? = nil
+    if write, onlyUIDs == nil, short == nil, let cur = refQuality[clock] {
+        let cands = refQuality.filter { $0.value.n >= 4 && $0.value.snrMin >= PPParams.refMinSnrDb }
+        if let best = cands.max(by: { $0.value.psrMed < $1.value.psrMed }), best.key != clock,
+           best.value.psrMed >= cur.psrMed + PPParams.refSwitchMarginDb {
+            refPref = .some(best.key == info.clock ? nil : info.outs[best.key].uid)
+            print(String(format: "參考喇叭：下次改用「%@」（峰值對旁瓣中位數 %.1f dB，目前的「%@」%.1f dB；反射越少越不會量歪）",
+                         info.outs[best.key].name, best.value.psrMed, info.outs[clock].name, cur.psrMed))
         }
     }
     if write {
         // 參考喇叭有不合格脈衝 → 整次不寫（直線擬合本身不可信）。其他台：不合格的脈衝不採用，剩下的交給最大一致群判斷；
         // 聽不到的藍牙（全部不合格）＝ 0 個脈衝 → 只略過它（維持未校正＝不出聲）
-        guard softBad || bad.isEmpty else { print("✗ 參考喇叭「\(info.outs[clock].name)」有不合格的脈衝，設定未修改"); return 1 }
+        guard softBad || bad.isEmpty else {
+            print("✗ 參考喇叭「\(info.outs[clock].name)」有不合格的脈衝，設定未修改")
+            // 這次失敗也要記住「下次換參考」（不然越差的參考越換不掉）
+            if let rp = refPref { var c = Config.load(); c.calibrationReferenceUID = rp; try? c.save() } else { refFailed() }
+            return 1
+        }
         let good = info.active.map { o in
             pulses.indices.filter { pulses[$0].output == o && !pulses[$0].discard && locs[$0] != nil && locs[$0]!.snr >= PPParams.minSnrDb }
                 .map { (locs[$0]!.pos - (fit.a + fit.b * Double($0))) / cap.micRate * 1000 }
@@ -1559,7 +1611,8 @@ func runVerifyProgramPath(engine: Engine, micQuery: String? = nil, mode: PlayMod
         for (k, o) in info.active.enumerated() where o != clock && good[k].isEmpty {
             print("⚠ 麥克風聽不到「\(info.outs[o].name)」（\(badByTarget[o]?.count ?? 0) 個脈衝不合格）：不寫入它的延遲（維持原值\(info.outs[o].isExternal ? "；未校正的藍牙不出聲" : "")）。請把它放近麥克風或調大它本身的音量再校正")
         }
-        return ppWriteLatencies(engine: engine, info: info, clock: clock, residuals: good, bad: [], mode: mode)
+        return ppWriteLatencies(engine: engine, info: info, clock: clock, residuals: good, bad: [], mode: mode,
+                                referencePref: refPref, onReferenceFail: refFailed)
     }
     if bad.isEmpty && silentOK && worst < PPParams.toleranceMs && maxSpread < PPParams.toleranceMs && extOK {
         print("✓ 節目音路徑對齊驗證通過（\(mode.label)模式、\(info.active.count) 台出聲）")
@@ -1584,12 +1637,37 @@ struct PPCluster: Equatable {
         let all = String(format: "採用 %d/%d 個脈衝（最大一致群，窗寬 < %@ ms），平均 %+.3f ms、離散 %.3f ms", kept.count, total,
                          String(format: "%.1f", width), mean, spread)
         let tie = tiedOtherMean.map { String(format: "；⚠ 兩群一樣多（另一群平均 %+.3f ms），取較早的一群", $0) } ?? ""
-        let lz = loose ? String(format: "；寬鬆退路：%.1f ms 窗湊不到一致群，改用 %.0f ms 窗、取中位數", PPParams.writeMaxSpreadExternalMs, width) : ""
+        let rf = reflectionMeanMs.map { String(format: "；另一組 %+.3f ms（晚 %.2f ms）判定為反射，取早的（直達）", $0, $0 - mean) } ?? ""
+        let lz = rf + (loose ? String(format: "；寬鬆退路：%.1f ms 窗湊不到一致群，改用 %.0f ms 窗、取中位數", PPParams.writeMaxSpreadExternalMs, width) : "")
         return all + tie + lz + (ok ? "" : String(format: "；✗ 一致的脈衝不足（要 ≥ %d 個且 ≥ 一半）", PPParams.writeMinCluster))
     }
     var width: Double
     /// 寬鬆退路的結果（mean 是中位數）
     var loose = false
+    /// 反射感知（ppWiredCluster）：晚到那組（當成反射）的平均；nil = 沒用到
+    var reflectionMeanMs: Double? = nil
+}
+
+/// 【2026-10-04】有線裝置的一致群（反射感知）：嚴格窗（writeMaxSpreadMs）不成立時，若脈衝分成兩組都很緊密、
+/// 晚的那組正好晚 refReflectionMinMs–refReflectionMaxMs（機殼／牆面反射），就把晚的那組當成早的那組的反射一起算支持數、取早的（直達）。
+/// 實例：內建喇叭 −32.438／−28.586／−32.433／−28.605（直達和 +3.85 ms 反射交替，2／2 永遠湊不到 3 個）→ 取 −32.436
+func ppWiredCluster(_ values: [Double]) -> PPCluster {
+    let strict = ppLargestCluster(values, width: PPParams.writeMaxSpreadMs)
+    if strict.ok { return strict }
+    let early = strict   // 最大一致群（平手取較早）
+    guard early.kept.count >= 2 else { return strict }
+    let rest = values.filter { v in !early.kept.contains(v) }
+    let late = ppLargestCluster(rest, width: PPParams.writeMaxSpreadMs)
+    guard late.kept.count >= 1, late.mean.isFinite else { return strict }
+    let gap = late.mean - early.mean
+    guard gap >= PPParams.refReflectionMinMs, gap <= PPParams.refReflectionMaxMs else { return strict }
+    let support = early.kept.count + late.kept.count
+    guard support >= PPParams.writeMinCluster, support * 2 >= values.count else { return strict }
+    var r = early
+    r.ok = true
+    r.tiedOtherMean = nil
+    r.reflectionMeanMs = late.mean
+    return r
 }
 
 /// 外接輸出（藍牙）的一致群：先用嚴格窗 writeMaxSpreadExternalMs；不成立再用 writeMaxSpreadExternalLooseMs、取中位數
@@ -1633,7 +1711,18 @@ func ppLargestCluster(_ values: [Double], width: Double) -> PPCluster {
 /// residuals[k] = info.active[k] 各脈衝相對參考直線的到達差（ms）。每台取「最大一致群」（ppLargestCluster：寬 writeMaxSpreadMs 的窗裡
 /// 成員最多的一群，平手取較早的群）的平均；成員要 ≥ writeMinCluster 且 ≥ 一半，否則**只有那台**不寫（保留舊值）、其他照寫；
 /// 參考喇叭不合格才整次不寫。外接輸出（藍牙）窗寬 writeMaxSpreadExternalMs（量到的值含 BluetoothOut 固定緩衝與 A2DP 延遲）。
-private func ppWriteLatencies(engine: Engine, info: PPInfo, clock: Int, residuals: [[Double]], bad: [String], mode: PlayMode) -> Int32 {
+/// 【2026-10-04】偏好的參考喇叭量不準 → 清掉偏好（下次退回主時鐘＝內建）
+private func ppDropReferencePref(_ name: String, fallback: String) {
+    var c = Config.load()
+    guard c.calibrationReferenceUID != nil else { return }
+    c.calibrationReferenceUID = nil
+    do { try c.save(); print("⚠ 參考喇叭「\(name)」這次量不準（關了或音量太小？）：下次改回「\(fallback)」當參考") }
+    catch { print("⚠ 參考喇叭「\(name)」這次量不準，但清除偏好失敗：\(error)") }
+}
+
+/// referencePref：nil = 不改；.some(nil) = 改回主時鐘；.some(uid) = 下次用這台當參考
+private func ppWriteLatencies(engine: Engine, info: PPInfo, clock: Int, residuals: [[Double]], bad: [String], mode: PlayMode,
+                              referencePref: String?? = nil, onReferenceFail: () -> Void = {}) -> Int32 {
     guard bad.isEmpty else { print("✗ 量測不合格（見上），設定未修改"); return 1 }
     var means: [Double] = []
     var keptActive: [Int] = []
@@ -1641,11 +1730,16 @@ private func ppWriteLatencies(engine: Engine, info: PPInfo, clock: Int, residual
     var clusterOf: [Int: PPCluster] = [:]
     for (k, o) in info.active.enumerated() {
         let ext = info.outs[o].isExternal
-        let sel = ext ? ppExternalCluster(residuals[k]) : ppLargestCluster(residuals[k], width: PPParams.writeMaxSpreadMs)
+        let sel = ext ? ppExternalCluster(residuals[k]) : ppWiredCluster(residuals[k])
         clusterOf[o] = sel
         print("  \(info.outs[o].name)：\(sel.summary)")
         guard sel.ok else {
-            if o == clock { print("✗ 參考喇叭「\(info.outs[o].name)」量測不穩（\(sel.summary)），設定未修改"); return 1 }
+            if o == clock {
+                print("✗ 參考喇叭「\(info.outs[o].name)」量測不穩（\(sel.summary)），設定未修改")
+                // 這次失敗也要記住「下次換參考」（2026-10-04 實機：選出電視卻因為這裡失敗沒存）
+                if let rp = referencePref { var c = Config.load(); c.calibrationReferenceUID = rp; try? c.save() } else { onReferenceFail() }
+                return 1
+            }
             print("⚠ 「\(info.outs[o].name)」\(ext ? "（藍牙）" : "")量測不穩：不寫入它的延遲（維持原值），其他裝置照寫")
             skipped.append(info.outs[o].name)
             continue
@@ -1687,6 +1781,7 @@ private func ppWriteLatencies(engine: Engine, info: PPInfo, clock: Int, residual
     let measured = Set(info.active.map { info.outs[$0].uid })
     for (uid, d) in cfg.devices where !measured.contains(uid) && d.needsRecalibration { newCfg.devices[uid]?.needsRecalibration = true }
     newCfg.calibratedAt = Config.nowISO8601()
+    if let rp = referencePref { newCfg.calibrationReferenceUID = rp }
     do { try newCfg.save() } catch { print("✗ 寫設定檔失敗：\(error)"); return 1 }
     engine.applyConfig(newCfg)
     print("脈衝＋GCC-PHAT 量尺寫入 measuredLatencyMs（參考：\(info.outs[clock].name)）：")
@@ -1710,7 +1805,8 @@ private func ppWriteLatencies(engine: Engine, info: PPInfo, clock: Int, residual
     // 【第 C 輪】藍牙量到的相對延遲（相對參考喇叭，寫入後的值）：app 的漂移模型拿來當一個量測點
     for o in info.active where info.outs[o].isExternal {
         guard let v = newCfg.measuredLatencyMs(info.outs[o].uid), let sel = clusterOf[o] else { continue }
-        print(String(format: "@@latency-obs %@ %.4f %.4f %d calibration", info.outs[o].uid, v - (newCfg.measuredLatencyMs(refUID) ?? 0), sel.spread, sel.kept.count))
+        // 以主時鐘（內建）為基準（app 的漂移模型用這個；參考換成別台時也一樣）
+        print(String(format: "@@latency-obs %@ %.4f %.4f %d calibration", info.outs[o].uid, v - (newCfg.measuredLatencyMs(info.outs[info.clock].uid) ?? 0), sel.spread, sel.kept.count))
     }
     print("✓ 已寫入 \(Config.fileURL.path)；請再跑 `calibrate --verify-program` 確認殘差")
     return 0
@@ -2227,6 +2323,11 @@ func runProgramPathSelfTest() -> Int32 {
         check(e.ok && e.kept.count == 6 && e.spread < 0.05, "正常：6 個全採用")
         let f = ppLargestCluster([10.0, 10.4, 10.9, 11.3, 10.2, 13.0], width: PPParams.writeMaxSpreadExternalMs)
         check(f.ok && f.kept.count == 5, String(format: "藍牙（窗寬 %.1f ms）：", PPParams.writeMaxSpreadExternalMs) + f.summary)
+        // 有線反射感知（2026-10-04 內建喇叭實測：直達與 +3.85 ms 反射交替）
+        let wr = ppWiredCluster([-32.438, -28.586, -32.433, -28.605])
+        check(wr.ok && abs(wr.mean - (-32.4355)) < 1e-6 && wr.reflectionMeanMs != nil, "有線反射感知：2／2 交替 → 取早的（直達）：" + wr.summary)
+        check(!ppWiredCluster([-32.4, -20.0, -32.4, -20.1]).ok, "有線：兩組差 12 ms（不是反射）→ 仍不寫")
+        check(!ppWiredCluster([-32.4, -28.6, -25.0, -21.0]).ok, "有線：只有 1 個直達 → 仍不寫")
         // 寬鬆退路（2026-10-04 MK-99 實測型態）：1.5 ms 窗湊不到 → 10 ms 窗、取中位數；超過 10 ms 仍不寫
         let lz = ppExternalCluster([358.520, 361.034, 363.9, 365.7])
         check(lz.ok && lz.loose && abs(lz.mean - (361.034 + 363.9) / 2) < 1e-9, "藍牙寬鬆退路（離散 7.2 ms → 中位數）：" + lz.summary)
