@@ -120,12 +120,17 @@ Hardware acceptance results: "整合驗收" (integration acceptance) V8 / V9 in 
   When the countdown ends it runs `calibrate --pulse --only <uid>` (measures only the reference speaker + this device and keeps the rest; about 20 s for wired, about 47 s to measure everything).
   **Bluetooth devices that were calibrated before** (reconnect, app relaunch, drift compensation) automatically use the **short measurement**: about 10–11 s (previously 31 s) — see "Bluetooth drift compensation" below.
 - **A calibrated wired device is reconnected**: it plays immediately with its previous values; no test tone.
-- **A calibrated Bluetooth device actually disconnects and reconnects**: treated like an app relaunch — silent from the moment the stream starts, 3-second countdown, `--only` recalibration;
+- **A calibrated Bluetooth device actually disconnects and reconnects**: silent from the moment the stream starts, 3-second countdown, `--only` recalibration;
   if notifications aren't authorized and the panel is closed, the countdown starts when you open the panel (needsConsent). Why: in V8, A2DP latency differed by 35–61 ms each time the stream was reopened.
 - **Bluetooth after an app relaunch / launch at login** (previously calibrated): GLASS5+ latency was different after every relaunch (413.6 / 474.8 / 426.3 / 443.5 / 430.5 ms, while kAudioDevicePropertyLatency reported by the system stayed at 111.6 ms and didn't reflect it)
-  → it **stays silent** until calibrated, with the same 3-second countdown and automatic recalibration (Bluetooth only).
+  → since 2026-10-04 it **keeps playing with its last latency** (it used to stay silent until calibrated, which often meant silent all night when notifications were off),
+  and a short calibration runs automatically **once someone is listening** (program audio playing for ≥ 5 s, or a pause between tracks), followed by the post-calibration follow-ups. No test tones at login if nothing is playing.
 - If the calibration microphone is busy in another app (a video call, for example) → postponed with a notification, and the countdown restarts once the mic is free; several devices appearing at once → merged into one run; at most one calibration at a time.
-- Devices already present at app launch that were never calibrated do **not** automatically play test tones (they just show "Needs calibration"); devices whose auto-calibration failed or was stopped are not retried automatically.
+- Devices already present at app launch that were never calibrated do **not** automatically play test tones (they just show "Needs calibration"); devices whose auto-calibration was stopped are not retried; **a failed one is retried automatically after 1, 3 and 10 minutes** (no countdown), and only after 3 misses is it left as "Needs calibration".
+- **Automatic reference speaker** (2026-10-04): a full calibration compares each wired speaker's peak-to-sidelobe ratio (strong reflections make the measurement slip),
+  and if one beats the current reference by ≥ 3 dB it becomes the next reference (`calibrationReferenceUID`); if it can't be measured, it falls back to the built-in speaker.
+  Measured: the built-in speaker sits in the chassis and its ~+3.8 ms reflection is as strong as the direct sound (0.6 dB) vs. 12.2 dB for the TV → reference spread 0.03–0.2 → 0.004 ms.
+  If a wired device's pulses split into a direct group and a reflection 2–6 ms later, the direct group is used.
 - `ctl autocal status|cancel|now`; rules and wiring in `docs/API.md` §12 (Chinese).
 - **Gap in the original audio**: during calibration the app and the calibration subprocess "hand over" the tap (the subprocess prepares the mic, Bluetooth and afplay before letting the app tear its tap down, and as soon as the subprocess removes its tap the app rebuilds — without waiting for analysis and file writes).
   Measured in coreaudiod: no tap at all for 85 ms at the start and 99 ms at the end (the start used to take about 1 second).
