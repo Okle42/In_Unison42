@@ -167,6 +167,12 @@ final class AppState: ObservableObject {
     private var lastFullRefresh = Date.distantPast
     private var lastBluetoothList: [AudioDevice] = []
     private var lastGuardWarning: OutputWarning?
+    /// 【2026-10-04】藍牙連線健康：每台最近 btUnstableWindow 秒的（時間, 誤差過大重對時累計）；已提示過的狀態（log 只在變化時印）
+    private var btResyncSamples: [String: [(at: Date, big: Int64)]] = [:]
+    private var btHealthState: [String: String] = [:]
+    static let btUnstableWindow: TimeInterval = 30
+    /// 視窗內誤差過大重對時達這個次數 = 連線不穩（正常一整天個位數）
+    static let btUnstableResyncs: Int64 = 3
     /// 設定檔唯讀保護（config.json 損壞後）：完整刷新時重讀旗標檔（面板警告＋「重設設定」按鈕）
     private var configProtection: Config.WriteProtection? = Config.writeProtection()
     static let fullRefreshInterval: TimeInterval = 10
@@ -1329,6 +1335,7 @@ final class AppState: ObservableObject {
         let bluetooth: [AudioDevice]
         let guardWarning: OutputWarning?
         var bluetoothErrors: [String: String] = [:]
+        var bluetoothStats: [String: BluetoothOutput.Stats] = [:]
         var full = true
     }
     private var refreshInFlight = false
@@ -1357,7 +1364,7 @@ final class AppState: ObservableObject {
             let snap = Snapshot(status: engine.status(resetPeaks: true), plan: engine.plan, details: engine.outputDetails,
                                 bluetooth: full ? Devices.bluetoothOutputs() : prevBT,
                                 guardWarning: full ? DefaultOutputGuard.evaluate(engine: engine) : prevGuard,
-                                bluetoothErrors: bt.errors, full: full)
+                                bluetoothErrors: bt.errors, bluetoothStats: bt.outputs.mapValues { $0.stats }, full: full)
             DispatchQueue.main.async {
                 MainActor.assumeIsolated {
                     self.refreshInFlight = false
@@ -1366,6 +1373,45 @@ final class AppState: ObservableObject {
                 }
             }
         }
+    }
+
+    /// 【2026-10-04】藍牙連線健康警告（每秒刷新時呼叫）：
+    ///   · 連線降速（BTRenderer 判定、已自動靜音）：macOS 實際送資料的速度偏離名目 > 1%（GLASS5+ 重連後只跑 91%）
+    ///   · 連線不穩：最近 30 秒誤差過大重對時 ≥ 3 次（每次都會淡出淡入一下，聽起來斷斷續續）
+    /// 文字不放會跳動的計數（警告 id 含文字，每秒變會讓面板一直重排）；細節在 log 與 ctl bt status
+    private func bluetoothHealthWarnings(_ stats: [String: BluetoothOutput.Stats], now: Date) -> [AppWarning] {
+        var w: [AppWarning] = []
+        for uid in btResyncSamples.keys where stats[uid] == nil { btResyncSamples[uid] = nil; btHealthState[uid] = nil }
+        for (uid, st) in stats.sorted(by: { $0.key < $1.key }) {
+            let name = devices.first { $0.uid == uid }?.name ?? uid
+            var hist = btResyncSamples[uid, default: []]
+            if let last = hist.last, st.bigErrResyncs < last.big { hist.removeAll() }   // 重開 IOProc：計數歸零
+            hist.append((now, st.bigErrResyncs))
+            hist.removeAll { now.timeIntervalSince($0.at) > Self.btUnstableWindow }
+            btResyncSamples[uid] = hist
+            let recent = (hist.last?.big ?? 0) - (hist.first?.big ?? 0)
+            let state: String
+            if st.rateFault {
+                let pct = st.linkSpeed.map { String(format: "%.0f%%", $0 * 100) } ?? "不到正常"
+                state = "降速 \(pct)"
+                w.append(AppWarning(kind: .bluetooth,
+                                    message: "藍牙「\(name)」連線降速：macOS 只用 \(pct) 的速度送資料給它，已先把這台靜音免得斷斷續續。把喇叭關機再開（重新連線）通常就會恢復",
+                                    actionTitle: nil))
+            } else if recent >= Self.btUnstableResyncs {
+                state = "不穩"
+                w.append(AppWarning(kind: .bluetooth,
+                                    message: "藍牙「\(name)」連線不穩：一直重新對時，聽起來會斷斷續續。試著把喇叭移近 Mac、或關機再開",
+                                    actionTitle: nil))
+            } else {
+                state = "正常"
+            }
+            let prev = btHealthState[uid] ?? "正常"
+            if state != prev {
+                AppLog.line("藍牙「\(name)」連線狀態：\(prev) → \(state)（最近 \(Int(Self.btUnstableWindow)) 秒誤差過大重對時 \(recent) 次；\(st.description)）")
+            }
+            btHealthState[uid] = state
+        }
+        return w
     }
 
     /// 同步刷新（離屏截圖用；engine 沒在跑，不會卡）
@@ -1482,6 +1528,7 @@ final class AppState: ObservableObject {
             let name = devices.first { $0.uid == uid }?.name ?? uid
             w.append(AppWarning(kind: .bluetooth, message: "藍牙「\(name)」無法出聲：\(err)", actionTitle: nil))
         }
+        w += bluetoothHealthWarnings(snap.bluetoothStats, now: now)
         if w != warnings { warnings = w }
 
         // log：狀態有變才印（另 600 秒心跳）

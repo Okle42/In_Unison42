@@ -22,7 +22,8 @@
 //    * 實測（第 C 輪驗收）：GLASS5+ 同一串流 38 分鐘內速度 +0.2 → −1.1 ms／分鐘，量測間隔 10–18 分鐘時任何外推都超過 3 ms；
 //      補償要成立，靠的是約 5 分鐘一次的量測（下面的排程），模型只負責量測之間那幾分鐘。
 // 2. 短校正排程（ShortCalScheduler）：量測點不夠時自己排「只量藍牙的短校正」（約 10 秒，`--pulse --only <藍牙>` 自動走短量測）：
-//    * 第 1 點之後約 5 分鐘做第 2 點（取得漂移速度）；之後 2σ 預估誤差 > 2 ms（照目前參數約每 5 分鐘）或距上一點 30 分鐘，擇早。
+//    * 第 1 點之後約 3 分鐘做第 2 點（取得漂移速度；2026-10-04 由 5 分鐘提早）；之後 2σ 預估誤差 > 2 ms（照目前參數約每 5 分鐘）或距上一點 30 分鐘，擇早。
+//    * 【2026-10-04】校正後追蹤量測：串流的精確點 ≤ settleFollowUps（2）個時，到期就直接跑（不等空檔、不倒數）——剛串流時延遲一直長大。
 //    * 到期後優先挑「節目音靜止」的空檔直接跑（不中斷音樂、不倒數）：tap 輸入連續 5 秒 < −60 dBFS、靜止前連續播了 ≥ 20 秒、
 //      系統沒靜音且音量 > −40 dB；到期後連續播放 30 分鐘都沒有空檔，才走 AutoCalibrator 的倒數 3 秒（通知沒授權、面板關著 → needsConsent）。
 //    * 沒量到 → 5 分鐘後再試；連續 3 次沒量到 → 標記需要重新校正、停止自動短校正（按「需要校正」量到後恢復）。
@@ -424,8 +425,11 @@ func parseBluetoothResiduals(_ lines: [String]) -> [(String, Double)] {
 // MARK: - 短校正排程
 
 struct ShortCalParams: Equatable {
-    /// 第 1 點之後多久做第 2 點（估漂移速度）
-    var secondPointAfter: TimeInterval = 300
+    /// 第 1 點之後多久做第 2 點（估漂移速度）。【2026-10-04】300 → 180：實測校正後 5 分鐘 GLASS5+ 已晚 73 ms、MK-99 晚 32 ms
+    var secondPointAfter: TimeInterval = 180
+    /// 【2026-10-04 Kang 定案】校正後追蹤量測：每個串流的前這麼多次短校正，到期就直接跑——
+    /// 不等節目音空檔、不倒數（藍牙剛開始串流時延遲會一直長大，等 30 分鐘空檔期間早就不同步）。之後恢復空檔優先的規則
+    var settleFollowUps = 2
     /// 距上一點最久（即使預估誤差還小）。【第 C 輪驗收後】照目前的預估誤差參數（速度會變 0.08 ms／分鐘²）
     /// 2σ > 2 ms 約在錨點後 5 分鐘就到期，這個上限只有「速度很穩的喇叭（rateWanderMsPerMin2 很小）」才會用到
     var maxInterval: TimeInterval = 1800
@@ -489,11 +493,15 @@ final class ShortCalScheduler {
     private(set) var failures: [String: Int] = [:]
     /// 最近一次開始的是哪台、空檔還是倒數（ctl／面板顯示）
     private(set) var lastStart: (uid: String, at: Date, gap: Bool)?
+    /// 【2026-10-04】校正後追蹤量測：每台「這個串流」已經跑了幾次（串流換了就歸零）。
+    /// 以次數計、不看精確點數：MK-99 每 3 分鐘跳 ±25 ms，模型每次「以新校正點重新開始」→ 點數一直是 1，
+    /// 用點數判斷會每 3 分鐘中斷一次音樂（實機 22:47–22:57 連跑 4 次）
+    private(set) var followUps: [String: (stream: String?, count: Int)] = [:]
 
     init(params: ShortCalParams = ShortCalParams()) { self.params = params }
 
     func reset(uid: String) {
-        dueSince[uid] = nil; lastAttempt[uid] = nil; failures[uid] = nil
+        dueSince[uid] = nil; lastAttempt[uid] = nil; failures[uid] = nil; followUps[uid] = nil
     }
 
     /// 連續沒量到已達上限：停止自動短校正（等使用者、下一次量到或串流重開）
@@ -532,6 +540,16 @@ final class ShortCalScheduler {
             let gap: Bool
             // 連續播放多久（到期之後、而且上一次空檔之後）
             let playingFor = min(now.timeIntervalSince(since), env.secondsSinceLastGap)
+            var fu = followUps[t.uid] ?? (m.streamKey, 0)
+            if fu.stream != m.streamKey { fu = (m.streamKey, 0) }
+            if fu.count < params.settleFollowUps {
+                fu.count += 1
+                followUps[t.uid] = fu
+                lastAttempt[t.uid] = now
+                lastStart = (t.uid, now, true)
+                return [.start(uid: t.uid, name: t.name, gap: true,
+                               reason: "\(due.reason)；校正後追蹤量測（這個串流第 \(fu.count)／\(params.settleFollowUps) 次：藍牙剛開始串流延遲會一直變，不等空檔、不倒數）")]
+            }
             if env.programSilentSeconds >= params.silenceSeconds {
                 // 空檔：靜止太久（不聽了）、或靜止之前沒有在播（剛開、長段靜音開頭）就不跑
                 guard env.programSilentSeconds <= params.maxGapSilence, env.playedBeforeSilence >= params.minPlayingBeforeGap else { continue }
@@ -555,6 +573,8 @@ final class ShortCalScheduler {
         if measured {
             failures[uid] = 0
             dueSince[uid] = nil
+            // 「5 分鐘後再試」只給沒量到的情況；量到了就照 dueAt 排（2026-10-04：校正後追蹤量測的第 2 點約 4 分鐘後到期，舊版會被擋到 5 分鐘）
+            lastAttempt[uid] = nil
             return []
         }
         let f = (failures[uid] ?? 0) + 1
@@ -794,7 +814,9 @@ func runDriftSelfTest() -> Int32 {
               String(format: "8 分 %.2f、20 分 %.2f（停）、40 分 %.2f（停）", p8.ms, p20.ms, p40.ms))
     }
 
-    print("── 3. 預估誤差與短校正排程（第 2 點 5 分鐘、2σ > 2 ms 或 30 分鐘擇早） ──")
+    // 第 4 段測「空檔優先／倒數」狀態機本身：用舊規則（第 2 點 5 分鐘、不做校正後追蹤量測）；追蹤量測另見 4c
+    let legacyGapParams: ShortCalParams = { var p = ShortCalParams(); p.secondPointAfter = 300; p.settleFollowUps = 0; return p }()
+    print("── 3. 預估誤差與短校正排程（第 2 點 3 分鐘、2σ > 2 ms 或 30 分鐘擇早） ──")
     do {
         let s = ShortCalScheduler()
         let m = BluetoothDriftModel(uid: "bt")
@@ -802,7 +824,7 @@ func runDriftSelfTest() -> Int32 {
         check(s.dueAt(m) == nil, "沒有量測點：不排（交給自動校正）")
         _ = m.add(DriftPoint(at: at(0), latencyMs: truth(0), source: .calibration))
         let d1 = s.dueAt(m)!
-        check(d1.at == at(5), "第 1 點後 5 分鐘做第 2 點", d1.reason)
+        check(d1.at == at(3), "第 1 點後 3 分鐘做第 2 點", d1.reason)
         _ = m.add(DriftPoint(at: at(5), latencyMs: truth(5), source: .calibration))
         let d2 = s.dueAt(m)!
         let mins2 = d2.at.timeIntervalSince(at(5)) / 60
@@ -840,7 +862,7 @@ func runDriftSelfTest() -> Int32 {
         let tgt = ShortCalTarget(uid: "bt", name: "GLASS5+", active: true)
         var env = ShortCalEnvironment(); env.targets = [tgt]
         func starts(_ a: [ShortCalAction]) -> [(Bool)] { a.compactMap { if case .start(_, _, let g, _) = $0 { return g } else { return nil } } }
-        let s = ShortCalScheduler()
+        let s = ShortCalScheduler(params: legacyGapParams)
         check(s.tick(now: at(4), env: env, models: models).isEmpty, "還沒到 5 分鐘：不動")
         env.programSilentSeconds = 0
         check(s.tick(now: at(6), env: env, models: models).isEmpty && s.dueSince["bt"] == at(5), "到期但正在播音樂：等空檔（不中斷）")
@@ -851,7 +873,7 @@ func runDriftSelfTest() -> Int32 {
         _ = s.attemptFinished(uid: "bt", name: "GLASS5+", measured: true, now: at(9.2))
         _ = m.add(DriftPoint(at: at(9.2), latencyMs: truth(9.2), source: .calibration))
         // 連續播放 30 分鐘沒有空檔 → 倒數
-        let s2 = ShortCalScheduler()
+        let s2 = ShortCalScheduler(params: legacyGapParams)
         env.programSilentSeconds = 0
         let m2 = BluetoothDriftModel(uid: "bt")
         m2.reset(streamKey: "s", at: at(0))
@@ -868,7 +890,7 @@ func runDriftSelfTest() -> Int32 {
         a = s2.tick(now: at(41.5), env: env, models: ["bt": m2])
         check(starts(a) == [true], "延後中遇到空檔：直接跑", "\(a)")
         // 靜止太久（> 10 分鐘，不聽了）：不跑；音樂剛恢復：不會因為「到期很久」就立刻倒數（連續播放要重新累計 30 分鐘）
-        let sL = ShortCalScheduler()
+        let sL = ShortCalScheduler(params: legacyGapParams)
         var envL = env; envL.countdownBlocked = []; envL.programSilentSeconds = 11 * 60
         check(sL.tick(now: at(50), env: envL, models: ["bt": m2]).isEmpty, "靜止 11 分鐘（不聽了、半夜）：不在安靜的房間放測試音")
         envL.programSilentSeconds = 0; envL.secondsSinceLastGap = 60
@@ -876,12 +898,12 @@ func runDriftSelfTest() -> Int32 {
         envL.secondsSinceLastGap = 30 * 60
         check(starts(sL.tick(now: at(80), env: envL, models: ["bt": m2])) == [false], "恢復後連續播放 30 分鐘沒空檔 → 倒數")
         // 忙碌（校正中／背景監聽）→ 不動
-        let s3 = ShortCalScheduler()
+        let s3 = ShortCalScheduler(params: legacyGapParams)
         env.canStart = false
         check(s3.tick(now: at(6), env: env, models: ["bt": m2]).isEmpty, "有校正／監聽在跑：不動")
         env.canStart = true
         // 失敗：5 分鐘後再試；連續 3 次 → 標記
-        let s4 = ShortCalScheduler()
+        let s4 = ShortCalScheduler(params: legacyGapParams)
         env.countdownBlocked = []
         var flags = 0, tries = 0
         var tm = 5.0
@@ -895,7 +917,7 @@ func runDriftSelfTest() -> Int32 {
         }
         check(tries == 3 && flags == 1 && s4.stopped("bt"), "沒量到：每 5 分鐘再試；連續 3 次 → 標記一次、停止自動短校正（不會每 5 分鐘一直放測試音）", "試 \(tries) 次、標記 \(flags) 次")
         // 倒數拖很久才真的跑、然後失敗：要從結束算 5 分鐘，不可以馬上再放一次（09-29 23:22 實機）
-        let sRetry = ShortCalScheduler()
+        let sRetry = ShortCalScheduler(params: legacyGapParams)
         check(starts(sRetry.tick(now: at(6), env: env, models: ["bt": m2])).count == 1, "到期 → 開始")
         _ = sRetry.attemptFinished(uid: "bt", name: "GLASS5+", measured: false, now: at(32))
         check(starts(sRetry.tick(now: at(32.1), env: env, models: ["bt": m2])).isEmpty && starts(sRetry.tick(now: at(36.9), env: env, models: ["bt": m2])).isEmpty,
@@ -904,7 +926,7 @@ func runDriftSelfTest() -> Int32 {
         _ = s4.attemptFinished(uid: "bt", name: "GLASS5+", measured: true, now: at(41))
         check(!s4.stopped("bt") && starts(s4.tick(now: at(47), env: env, models: ["bt": m2])) == [true], "使用者按「需要校正」量到之後：恢復自動短校正")
         // 系統靜音／音量很小：不跑（空檔、倒數都不跑）
-        let s6 = ShortCalScheduler()
+        let s6 = ShortCalScheduler(params: legacyGapParams)
         var envM = env; envM.volumeGain = 0; envM.programSilentSeconds = 8
         check(s6.tick(now: at(10), env: envM, models: ["bt": m2]).isEmpty, "系統靜音（Kang 暫停音樂、靜音去接電話）：空檔也不放測試音")
         envM.volumeGain = 0.2; envM.playedBeforeSilence = 5
@@ -912,12 +934,61 @@ func runDriftSelfTest() -> Int32 {
         envM.playedBeforeSilence = 180
         check(starts(s6.tick(now: at(10), env: envM, models: ["bt": m2])) == [true], "播了 3 分鐘後靜止 8 秒、音量正常：空檔短校正")
         // 功能關閉 / 不出聲 → 不排
-        let s5 = ShortCalScheduler()
+        let s5 = ShortCalScheduler(params: legacyGapParams)
         env.enabled = false
         check(s5.tick(now: at(10), env: env, models: ["bt": m2]).isEmpty, "漂移補償關閉：不排")
         env.enabled = true
         env.targets = [ShortCalTarget(uid: "bt", name: "GLASS5+", active: false)]
         check(s5.tick(now: at(10), env: env, models: ["bt": m2]).isEmpty, "藍牙不出聲（影片／遊戲模式、暫停出聲）：不排")
+    }
+
+    print("── 4c. 校正後追蹤量測（2026-10-04）：精確點 ≤ 2 個時到期就直接跑（不等空檔、不倒數），之後恢復空檔優先 ──")
+    do {
+        let m = BluetoothDriftModel(uid: "bt")
+        m.reset(streamKey: "s", at: at(0))
+        _ = m.add(DriftPoint(at: at(0), latencyMs: truth(0), source: .calibration))
+        var env = ShortCalEnvironment(); env.targets = [ShortCalTarget(uid: "bt", name: "GLASS5+", active: true)]
+        env.programSilentSeconds = 0; env.secondsSinceLastGap = 0       // 音樂一直在播、沒有空檔
+        func gaps(_ a: [ShortCalAction]) -> [Bool] { a.compactMap { if case .start(_, _, let g, _) = $0 { return g } else { return nil } } }
+        let s = ShortCalScheduler()
+        check(s.tick(now: at(2.5), env: env, models: ["bt": m]).isEmpty, "校正後 2.5 分鐘：還沒到期")
+        let a1 = s.tick(now: at(3), env: env, models: ["bt": m])
+        check(gaps(a1) == [true] && "\(a1)".contains("追蹤量測"), "校正後 3 分鐘、音樂播放中：直接追蹤量測（不等空檔、不倒數）", "\(a1)")
+        _ = s.attemptFinished(uid: "bt", name: "GLASS5+", measured: true, now: at(3.2))
+        _ = m.add(DriftPoint(at: at(3.2), latencyMs: truth(3.2), source: .calibration))
+        let d2 = s.dueAt(m)!
+        let a2 = s.tick(now: d2.at, env: env, models: ["bt": m])
+        check(gaps(a2) == [true], "第 2 個追蹤量測（2σ 到期）也直接跑", String(format: "%.1f 分 %@", d2.at.timeIntervalSince(t0) / 60, "\(a2)"))
+        _ = s.attemptFinished(uid: "bt", name: "GLASS5+", measured: true, now: d2.at)
+        _ = m.add(DriftPoint(at: d2.at, latencyMs: truth(d2.at.timeIntervalSince(t0) / 60), source: .calibration))
+        let d3 = s.dueAt(m)!
+        check(s.tick(now: d3.at.addingTimeInterval(60), env: env, models: ["bt": m]).isEmpty, "已有 3 個精確點：恢復空檔優先（音樂播放中不跑）")
+        // 模型一直「以新校正點重新開始」（MK-99 每 3 分鐘跳 ±25 ms，點數一直是 1）：同一串流也只追蹤 2 次
+        let mj = BluetoothDriftModel(uid: "bt"); mj.reset(streamKey: "s", at: at(0))
+        _ = mj.add(DriftPoint(at: at(0), latencyMs: 373, source: .calibration))
+        let sj = ShortCalScheduler()
+        var runs = 0
+        var tm = 0.0
+        for jump in [397.0, 379, 354, 337, 360] {
+            tm += 3.2
+            if !gaps(sj.tick(now: at(tm), env: env, models: ["bt": mj])).isEmpty {
+                runs += 1
+                _ = sj.attemptFinished(uid: "bt", name: "MK-99", measured: true, now: at(tm + 0.2))
+                _ = mj.add(DriftPoint(at: at(tm + 0.2), latencyMs: jump, source: .calibration))
+            }
+        }
+        check(runs == 2, "延遲一直跳、模型一直重新開始：同一串流也只追蹤 2 次（不會每 3 分鐘中斷音樂）", "追蹤 \(runs) 次、點數 \(mj.points.count)")
+        // 串流重開 → 重新追蹤
+        mj.reset(streamKey: "s2", at: at(30))
+        _ = mj.add(DriftPoint(at: at(30), latencyMs: 380, source: .calibration))
+        check(gaps(sj.tick(now: at(33.5), env: env, models: ["bt": mj])) == [true], "串流重開：重新追蹤")
+        // 系統靜音：追蹤量測也不放測試音
+        let mq = BluetoothDriftModel(uid: "bt"); mq.reset(streamKey: "s", at: at(0))
+        _ = mq.add(DriftPoint(at: at(0), latencyMs: truth(0), source: .calibration))
+        var envQ = env; envQ.volumeGain = 0
+        check(ShortCalScheduler().tick(now: at(4), env: envQ, models: ["bt": mq]).isEmpty, "系統靜音：追蹤量測也不跑")
+        var envB = env; envB.canStart = false
+        check(ShortCalScheduler().tick(now: at(4), env: envB, models: ["bt": mq]).isEmpty, "正在校正／背景監聽：追蹤量測等一下")
     }
 
     print("── 5. 模擬：−0.78 ms／分鐘 60 分鐘，排程＋預測補償下的殘差 ──")

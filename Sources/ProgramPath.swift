@@ -50,6 +50,10 @@ enum PPParams {
     /// 【2026-09-29】1.0 → 1.5 ms：跟著驗證門檻放寬（藍牙 3 ms），取驗證門檻的一半。有線是 0.3／1（30%）；藍牙不照 30%（0.9 ms）
     /// 是因為實機同一次量測裡 A2DP 單一脈衝就偏過 0.65 ms（E2-verify-pilot：413.08／413.08／413.17／413.74），0.9 太貼、容易整台略過
     static let writeMaxSpreadExternalMs = 1.5
+    /// 【2026-10-04 Kang 定案】藍牙寬鬆退路：嚴格窗（1.5 ms）湊不到一致群時，改用這個窗寬的最大一致群、取**中位數**寫入。
+    /// MK-99 每個脈衝的延遲本來就跳 2–7 ms（不是音量不夠：匹配濾波比安靜段高 37 dB），1.5 ms 永遠過不了 → 一直不出聲；
+    /// 音樂模式差幾 ms 聽不出來（聲音走 34 cm 就 1 ms），寧可粗一點也要出聲
+    static let writeMaxSpreadExternalLooseMs = 10.0
     /// GCC-PHAT 峰值對「同長度純雜訊段（脈衝之間的安靜處）的 GCC-PHAT 最大值」的比值下限。
     /// 不用「峰值對旁瓣」：內建喇叭在機殼裡，反射造成的旁瓣本來就只低 3～4 dB，那不代表偵測失敗。
     static let minSnrDb = 6.0
@@ -57,6 +61,8 @@ enum PPParams {
     /// （平手取較早的群＝直達聲），成員要 ≥ writeMinCluster 且 ≥ 一半的脈衝。取代舊的「中位數 ±0.2 ms」
     /// （6 個脈衝 3／3 分成兩群時中位數落在中間 → 0 個被採用 → 整次不寫）。
     static let writeMinCluster = 3
+    /// 【2026-10-04】參考喇叭直線擬合：偏離超過這個（ms）的脈衝當離群（反射）剔除後重擬合（ppRobustFit）
+    static let refOutlierMs = 1.0
     /// 【2026-09-29 第二版】柔和版測試音：粉紅雜訊、只含 1–4 kHz、80 ms、RMS −22 dBFS（原白雜訊 −20）。
     /// 「延遲」定義成 1–4 kHz 的群延遲：GCC-PHAT 只用 1–4 kHz，取**包絡**（解析訊號絕對值）的峰值，不取載波峰——
     /// 1–4 kHz 的載波週期 0.25–1 ms，取載波峰會在相鄰週期間跳（就是以前 0.4–1.4 ms 的雙值）；包絡峰＝這個頻帶的群延遲，
@@ -67,7 +73,14 @@ enum PPParams {
     /// 校正子行程：音量來源以外的輸出（HDMI／DP、藍牙）用固定增益（不乘系統音量）。−8 dB × RMS −22 → 約 −30 dBFS RMS
     static let calibrationGainDb = -8.0
     /// 校正子行程：外接輸出（藍牙）的固定增益。GLASS5+ 音量 100% 放在 C270 旁時 −8 dB 會讓麥克風削波（0 dBFS）
-    static let calibrationGainExternalDb = -24.0
+    /// 【2026-10-04】−24 → −12 dB：藍牙通常放得比較遠，−24 dB 時麥克風只收到 SNR 7–10 dB（門檻 6），常常「量測不穩」。
+    /// 削波時 app 自動用 calibrationGainExternalFallbackDb 再量一次（CalibrationRunner；環境變數 btCalGainEnv 傳給子行程）
+    static let calibrationGainExternalDb = -12.0
+    static let calibrationGainExternalFallbackDb = -24.0
+    /// 子行程讀這個環境變數（dB）覆蓋 calibrationGainExternalDb（只給 app 的削波重試用；發行版白名單不必開新參數）
+    static let btCalGainEnv = "IN_UNISON42_BT_CAL_GAIN_DB"
+    /// 削波時印這行（app 據此決定要不要降低藍牙測試音重試）
+    static let micClipMarker = "@@mic-clip"
     /// 校正子行程：外接輸出（藍牙）的 150 Hz pilot（見 BTRenderer.render）。
     /// 【2026-09-29】−40 → −50 dBFS，而且**只在藍牙脈衝前後送**（ppPilotWindows）：之前整段校正都送 −40，耳機裡聽得到嗡聲
     static let bluetoothPilotDb = -50.0
@@ -89,11 +102,15 @@ enum PPParams {
     /// 沒有藍牙時的最短脈衝間隔（秒）。`--pulse` 量測時補償歸 0，有線裝置就用這個間隔
     static let minPeriodSeconds = 0.8
     /// 【2026-09-29 第 C 輪】藍牙短量測（`--pulse --only <藍牙>` 短校正、`--verify-program --only <藍牙>` 只量藍牙的驗證）：
-    /// `--only` 只有一台、已有上次延遲值的藍牙時用。序列 參考×2 → 藍牙×shortPulses（不丟暖機脈衝）→ 參考×2；
+    /// `--only` 只有一台、已有上次延遲值的藍牙時用。序列 參考×shortRefPulses → 藍牙×shortPulses（不丟暖機脈衝）→ 參考×shortRefPulses；
     /// 藍牙搜尋窗以上次的延遲為中心 ±shortHalfWindowMs（重連延遲跳 35–61 ms、同串流漂移每 30 分鐘約 23 ms 都在窗內），
     /// 藍牙的「安靜段」取脈衝**之前**半個週期（之後半個週期會碰到下一個參考脈衝）；pilot 從藍牙輸出啟動就開（暖機和準備時間重疊）。
     /// 補償一律歸 0（同 --pulse）。窗外（找不到）→ `@@short-miss <uid>`，app 改跑完整校正（`--full`）
     static let shortPulses = 4
+    /// 【2026-10-04】短量測前後各幾個參考脈衝：2 → 3。2+2 時參考喇叭撿到反射（+4 ms）的那對分不出哪個是直達
+    /// （例：+1.886／−2.252｜+0.309／+0.057），穩健擬合剔不得（剔錯會悄悄寫入偏 2–4 ms 的值）→ 整次失敗、5 分鐘後重試（log 77 次失敗 9 次）。
+    /// 3+3：6 點剔 1–2 個仍有 ≥ 4 點互相驗證。每次多約 1.8 秒
+    static let shortRefPulses = 3
     static let shortHalfWindowMs = 150.0
     static let shortLeadSeconds = 1.5
     static let shortTailExtraMs = 300.0
@@ -570,10 +587,12 @@ private func ppSequence(clock: Int, wired: [Int], external: [Int], per: Int, sig
     return pulses
 }
 
-/// 【第 C 輪】短量測序列：參考×2 → 藍牙×n（不丟暖機：pilot 從藍牙啟動就開著）→ 參考×2（直線擬合 4 點、藍牙在中間＝內插）
+/// 【第 C 輪】短量測序列：參考×r → 藍牙×n（不丟暖機：pilot 從藍牙啟動就開著）→ 參考×r（藍牙在中間＝內插）。
+/// r = shortRefPulses（2026-10-04 由 2 改 3：直線擬合 6 點，反射可以剔除）
 private func ppShortSequence(clock: Int, external: Int, count n: Int = PPParams.shortPulses, signal: PPSignal) -> [PPPulse] {
     func p(_ o: Int) -> PPPulse { PPPulse(output: o, state: 0, signal: signal, discard: false) }
-    return Array(repeating: p(clock), count: 2) + Array(repeating: p(external), count: n) + Array(repeating: p(clock), count: 2)
+    let r = PPParams.shortRefPulses
+    return Array(repeating: p(clock), count: r) + Array(repeating: p(external), count: n) + Array(repeating: p(clock), count: r)
 }
 
 /// 麥克風片段 [start, start+n)，keep 之後補 0（GCC 只看 lag 0..<search；遮掉窗尾的其他脈衝，PHAT 白化才不會被它影響）
@@ -830,6 +849,7 @@ private func ppRun(engine: Engine, mic: AudioDevice, targets: [PPTarget], pulses
     print(String(format: "  錄到 %.2f 秒，麥克風峰值 %.1f dBFS", Double(rec.frames) / rec.rate, peakDb))
     // 削波的脈衝波形被截平，GCC 峰位置會偏；校正時外接輸出不再套用使用者的 trim（測試音可能比以前大），所以要擋
     if peakDb >= PPParams.micClipDb {
+        print(PPParams.micClipMarker); fflush(stdout)
         return .failure(PPFail(String(format: "麥克風削波（峰值 %.1f dBFS ≥ %.0f）：測試音太大或麥克風離喇叭太近，結果不可信", peakDb, PPParams.micClipDb)))
     }
     return .success(PPCapture(mic: rec.samples(), periodSeconds: periodSeconds, micRate: rec.rate, pulseMicGuess: guesses, periodFrames: P,
@@ -1032,7 +1052,7 @@ func runPPReanalyze(_ args: [String]) -> Int32 {
     if Set(sigs).count > 1 { return ppABReport(cap, pulses: pulses, locs: locs, clock: cap.clock) ? 0 : 1 }
     let ck = pulses.indices.filter { pulses[$0].output == cap.clock && locs[$0] != nil }
     guard ck.count >= 4 else { print("✗ 參考喇叭脈衝不足"); return 1 }
-    let fit = ppFit(ck.map(Double.init), ck.map { locs[$0]!.pos })
+    let fit = ppRobustFit(ck.map(Double.init), ck.map { locs[$0]!.pos }, tolFrames: PPParams.refOutlierMs / 1000 * cap.micRate)
     var means: [Double] = []
     for o in Set(outs).sorted() {
         let ks = pulses.indices.filter { pulses[$0].output == o && locs[$0] != nil && !pulses[$0].discard }
@@ -1067,7 +1087,7 @@ private func ppABReport(_ cap: PPCapture, pulses: [PPPulse], locs: [(pos: Double
         let ck = pulses.indices.filter { pulses[$0].output == clock && pulses[$0].signal == sg && locs[$0] != nil && locs[$0]!.snr >= PPParams.minSnrDb }
         print("  [\(sg)]")
         guard ck.count >= 2 else { print("    ✗ 參考喇叭的有效脈衝不足（\(ck.count)）"); continue }
-        let fit = ppFit(ck.map(Double.init), ck.map { locs[$0]!.pos })
+        let fit = ppRobustFit(ck.map(Double.init), ck.map { locs[$0]!.pos }, tolFrames: PPParams.refOutlierMs / 1000 * cap.micRate)
         for o in Set(pulses.map(\.output)).sorted() {
             let ks = pulses.indices.filter { pulses[$0].output == o && pulses[$0].signal == sg && locs[$0] != nil }
             let good = ks.filter { locs[$0]!.snr >= PPParams.minSnrDb }
@@ -1093,6 +1113,23 @@ private func ppABReport(_ cap: PPCapture, pulses: [PPPulse], locs: [(pos: Double
     }
     print(ok ? "✓ A/B：每台差 ≤ 0.3 ms" : "✗ A/B：有裝置差 > 0.3 ms 或量不到")
     return ok
+}
+
+/// 【2026-10-04】參考喇叭直線擬合的穩健版：最小平方 → 偏離直線超過 tolFrames 的點（多半是撿到反射聲：內建喇叭在機殼裡，
+/// 約 +4 ms 的反射和直達一樣強）一次剔除最偏的一個再重擬合，最多剔除到剩 max(4, 一半)。
+/// 舊版直接最小平方：10 個參考脈衝裡 1 個偏 +3.9 ms 就把整條線拉歪，其他 9 個好脈衝變成 −0.9→0 ms 的斜坡（離散 0.9 ms > 0.3），
+/// 「參考喇叭量測不穩」整次不寫（2026-10-04 實機連兩次；剔除後 9 個離散 0.11 ms）
+private func ppRobustFit(_ xs: [Double], _ ys: [Double], tolFrames: Double) -> (a: Double, b: Double) {
+    var idx = Array(xs.indices)
+    var fit = ppFit(xs, ys)
+    let minKeep = max(4, (xs.count + 1) / 2)
+    while idx.count > minKeep {
+        let worst = idx.max { abs(ys[$0] - (fit.a + fit.b * xs[$0])) < abs(ys[$1] - (fit.a + fit.b * xs[$1])) }!
+        guard abs(ys[worst] - (fit.a + fit.b * xs[worst])) > tolFrames else { break }
+        idx.removeAll { $0 == worst }
+        fit = ppFit(idx.map { xs[$0] }, idx.map { ys[$0] })
+    }
+    return fit
 }
 
 /// 最小平方直線 y = a + b·x
@@ -1224,7 +1261,8 @@ func runVerifyProgramPath(engine: Engine, micQuery: String? = nil, mode: PlayMod
     // 測試音不受系統音量影響：音量來源以外的輸出用固定增益（內建喇叭的硬體音量不動）
     if let db = calibrationGainDb {
         engine.calibrationFixedGain = Float(pow(10, min(db, 0) / 20))
-        let edb = min(db, PPParams.calibrationGainExternalDb)
+        let envDb = ProcessInfo.processInfo.environment[PPParams.btCalGainEnv].flatMap(Double.init).flatMap { $0.isFinite ? min(0, max(-40, $0)) : nil }
+        let edb = min(db, envDb ?? PPParams.calibrationGainExternalDb)
         engine.calibrationFixedGainExternal = Float(pow(10, edb / 20))
         print(String(format: "測試音增益：HDMI／DP 固定 %.1f dB、藍牙 %.1f dB（不乘系統音量、不套面板的音量微調）；內建喇叭照系統音量＋音量微調（不調整）", min(db, 0), edb))
     }
@@ -1369,7 +1407,7 @@ func runVerifyProgramPath(engine: Engine, micQuery: String? = nil, mode: PlayMod
     // 主時鐘喇叭的脈衝擬合直線（麥克風時間軸：吸收漂移）
     let ck = pulses.indices.filter { pulses[$0].output == clock && locs[$0] != nil }
     guard ck.count >= 4 else { print("✗ 參考喇叭的脈衝不足：\(bad)"); return 1 }
-    let fit = ppFit(ck.map(Double.init), ck.map { locs[$0]!.pos })
+    let fit = ppRobustFit(ck.map(Double.init), ck.map { locs[$0]!.pos }, tolFrames: PPParams.refOutlierMs / 1000 * cap.micRate)
     let ppm = (fit.b / Double(cap.periodFrames) * PPParams.rate / cap.micRate - 1) * 1e6
     print(String(format: "  參考喇叭（%@）直線擬合：週期 %.3f 麥克風 frame（名目 %d）→ 麥克風時鐘差 %.1f ppm", cap.names[clock], fit.b, cap.periodFrames, ppm))
     func resMs(_ k: Int) -> Double { (locs[k]!.pos - (fit.a + fit.b * Double(k))) / cap.micRate * 1000 }
@@ -1383,7 +1421,7 @@ func runVerifyProgramPath(engine: Engine, micQuery: String? = nil, mode: PlayMod
         let refRes = ck.map(resMs)
         let refMean = refRes.reduce(0, +) / Double(max(1, refRes.count))
         let good = pulses.indices.filter { pulses[$0].output == o && locs[$0] != nil && locs[$0]!.snr >= PPParams.minSnrDb }.map(resMs)
-        let sel = ppLargestCluster(good, width: PPParams.writeMaxSpreadExternalMs)
+        let sel = ppExternalCluster(good)
         print("  \(info.outs[o].name)：\(sel.summary)（\(good.count)/\(pulses.filter { $0.output == o }.count) 個脈衝 SNR 合格）")
         guard sel.ok else { print("✗ 藍牙「\(info.outs[o].name)」量不到（一致的脈衝不足）"); return 1 }
         let meas = sel.mean - refMean
@@ -1504,7 +1542,7 @@ func runVerifyProgramPath(engine: Engine, micQuery: String? = nil, mode: PlayMod
         // 【第 C 輪】機器可讀：藍牙量到的相對延遲（補償扣回：到達差 − (補償_藍牙 − 補償_參考)），app 的漂移模型拿來當一個量測點
         for o in info.active where info.outs[o].isExternal {
             let good = pulses.indices.filter { pulses[$0].output == o && !pulses[$0].discard && locs[$0] != nil && locs[$0]!.snr >= PPParams.minSnrDb }.map(resMs)
-            let sel = ppLargestCluster(good, width: PPParams.writeMaxSpreadExternalMs)
+            let sel = ppExternalCluster(good)
             guard sel.ok, means[kRef].isFinite else { continue }
             let rel = (sel.mean - means[kRef]) - ((info.delays[o] ?? 0) - (info.delays[clock] ?? 0))
             print(String(format: "@@latency-obs %@ %.4f %.4f %d verify", info.outs[o].uid, rel, sel.spread, sel.kept.count))
@@ -1546,9 +1584,24 @@ struct PPCluster: Equatable {
         let all = String(format: "採用 %d/%d 個脈衝（最大一致群，窗寬 < %@ ms），平均 %+.3f ms、離散 %.3f ms", kept.count, total,
                          String(format: "%.1f", width), mean, spread)
         let tie = tiedOtherMean.map { String(format: "；⚠ 兩群一樣多（另一群平均 %+.3f ms），取較早的一群", $0) } ?? ""
-        return all + tie + (ok ? "" : String(format: "；✗ 一致的脈衝不足（要 ≥ %d 個且 ≥ 一半）", PPParams.writeMinCluster))
+        let lz = loose ? String(format: "；寬鬆退路：%.1f ms 窗湊不到一致群，改用 %.0f ms 窗、取中位數", PPParams.writeMaxSpreadExternalMs, width) : ""
+        return all + tie + lz + (ok ? "" : String(format: "；✗ 一致的脈衝不足（要 ≥ %d 個且 ≥ 一半）", PPParams.writeMinCluster))
     }
     var width: Double
+    /// 寬鬆退路的結果（mean 是中位數）
+    var loose = false
+}
+
+/// 外接輸出（藍牙）的一致群：先用嚴格窗 writeMaxSpreadExternalMs；不成立再用 writeMaxSpreadExternalLooseMs、取中位數
+func ppExternalCluster(_ values: [Double]) -> PPCluster {
+    let strict = ppLargestCluster(values, width: PPParams.writeMaxSpreadExternalMs)
+    if strict.ok { return strict }
+    var lz = ppLargestCluster(values, width: PPParams.writeMaxSpreadExternalLooseMs)
+    guard lz.ok else { return strict }
+    let k = lz.kept   // 已排序
+    lz.mean = k.count % 2 == 1 ? k[k.count / 2] : (k[k.count / 2 - 1] + k[k.count / 2]) / 2
+    lz.loose = true
+    return lz
 }
 
 func ppLargestCluster(_ values: [Double], width: Double) -> PPCluster {
@@ -1588,8 +1641,7 @@ private func ppWriteLatencies(engine: Engine, info: PPInfo, clock: Int, residual
     var clusterOf: [Int: PPCluster] = [:]
     for (k, o) in info.active.enumerated() {
         let ext = info.outs[o].isExternal
-        let width = ext ? PPParams.writeMaxSpreadExternalMs : PPParams.writeMaxSpreadMs
-        let sel = ppLargestCluster(residuals[k], width: width)
+        let sel = ext ? ppExternalCluster(residuals[k]) : ppLargestCluster(residuals[k], width: PPParams.writeMaxSpreadMs)
         clusterOf[o] = sel
         print("  \(info.outs[o].name)：\(sel.summary)")
         guard sel.ok else {
@@ -1967,7 +2019,7 @@ private func ppSimulate(_ ts: [PPSimTarget], signal: PPSignal, noiseDb: Double, 
     res.seconds = lead + Double(pulses.count) * period + (shortHintMs != nil ? PPParams.shortTailExtraMs / 1000 + 0.3 : PPParams.tailSeconds)
     let ck = pulses.indices.filter { pulses[$0].output == clock && locs[$0] != nil }
     guard ck.count >= 4 else { res.bad = pulses.count; return res }
-    let fit = ppFit(ck.map(Double.init), ck.map { locs[$0]!.pos })
+    let fit = ppRobustFit(ck.map(Double.init), ck.map { locs[$0]!.pos }, tolFrames: PPParams.refOutlierMs / 1000 * cap.micRate)
     for (k, p) in pulses.enumerated() where !p.discard && !rep.shortMiss.contains(p.output) {
         guard let l = locs[k] else { res.bad += 1; continue }
         if l.snr < PPParams.minSnrDb { res.bad += 1 }
@@ -2122,7 +2174,7 @@ func runProgramPathSelfTest() -> Int32 {
         let bt = PPSimTarget(name: "藍牙(A2DP 模擬)", latMs: 436.148, compMs: 0, amp: 0.5, paths: refl, a2dp: true, external: true)
         let ref = PPSimTarget(name: "內建(模擬)", latMs: 0, compMs: 0, amp: 1.0, paths: refl)
         let seq = ppShortSequence(clock: 0, external: 1, signal: .pink)
-        check(seq.map(\.output) == [0, 0, 1, 1, 1, 1, 0, 0] && !seq.contains { $0.discard }, "短量測序列：參考×2、藍牙×4（不丟暖機）、參考×2")
+        check(seq.map(\.output) == [0, 0, 0, 1, 1, 1, 1, 0, 0, 0] && !seq.contains { $0.discard }, "短量測序列：參考×3、藍牙×4（不丟暖機）、參考×3")
         check(abs(ppShortPeriod(hintMs: 436.148) - 0.9) < 1e-9 && abs(ppShortPeriod(hintMs: 100) - PPParams.shortMinPeriodSeconds) < 1e-9 && ppShortPeriod(hintMs: 600) > 1.0,
               String(format: "間隔依上次延遲：436 ms → %.2f 秒、100 ms → %.2f 秒（下限）、600 ms → %.2f 秒", ppShortPeriod(hintMs: 436.148), ppShortPeriod(hintMs: 100), ppShortPeriod(hintMs: 600)))
         let pl = PPSimPilot(db: PPParams.shortPilotDb, gated: false)
@@ -2147,7 +2199,7 @@ func runProgramPathSelfTest() -> Int32 {
         }
         check(missFar == 3, "上次延遲差 200 ms（窗外）：3/3 次判「找不到」（@@short-miss → 完整量測），不會抓錯（找不到 \(missFar)／3）")
         let r0 = ppSimulate([ref, bt], signal: .pink, noiseDb: 20, driftPpm: 0, micPathMs: 12.7, seed: 1, pilot: pl, shortHintMs: 436.148)
-        check(r0.seconds <= 10, String(format: "短量測錄音長度 %.1f 秒（前導 %.1f＋脈衝 8 × %.2f＋尾巴）≤ 10 秒（加上啟動／交接／分析約 1.7 秒，目標整體 ≤ 12 秒）",
+        check(r0.seconds <= 12, String(format: "短量測錄音長度 %.1f 秒（前導 %.1f＋脈衝 10 × %.2f＋尾巴）≤ 12 秒（2026-10-04 參考 3+3 多約 1.8 秒；加上啟動／交接／分析約 1.7 秒，目標整體 ≤ 14 秒）",
                                          r0.seconds, PPParams.shortLeadSeconds, ppShortPeriod(hintMs: 436.148)))
     }
 
@@ -2175,6 +2227,12 @@ func runProgramPathSelfTest() -> Int32 {
         check(e.ok && e.kept.count == 6 && e.spread < 0.05, "正常：6 個全採用")
         let f = ppLargestCluster([10.0, 10.4, 10.9, 11.3, 10.2, 13.0], width: PPParams.writeMaxSpreadExternalMs)
         check(f.ok && f.kept.count == 5, String(format: "藍牙（窗寬 %.1f ms）：", PPParams.writeMaxSpreadExternalMs) + f.summary)
+        // 寬鬆退路（2026-10-04 MK-99 實測型態）：1.5 ms 窗湊不到 → 10 ms 窗、取中位數；超過 10 ms 仍不寫
+        let lz = ppExternalCluster([358.520, 361.034, 363.9, 365.7])
+        check(lz.ok && lz.loose && abs(lz.mean - (361.034 + 363.9) / 2) < 1e-9, "藍牙寬鬆退路（離散 7.2 ms → 中位數）：" + lz.summary)
+        let lz2 = ppExternalCluster([350.0, 356.0, 362.0, 368.0])
+        check(!lz2.ok, "藍牙寬鬆退路：離散 18 ms 仍不寫：" + lz2.summary)
+        check(!ppExternalCluster([413.174, 413.082, 413.083, 413.736]).loose, "嚴格窗成立時不走寬鬆退路")
         let f2 = ppLargestCluster([413.174, 413.082, 413.083, 413.736], width: PPParams.writeMaxSpreadExternalMs)
         check(f2.ok && f2.kept.count == 4, "藍牙實機 E2-verify-pilot 的 4 個脈衝（離散 0.65 ms）全部採用：\(f2.summary)")
         let g = ppLargestCluster([], width: 0.3)

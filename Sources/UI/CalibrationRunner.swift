@@ -57,6 +57,10 @@ final class CalibrationRunner: ObservableObject {
     private var ticker: Timer?
     private var resultMessage: String?
     private var failureMessage: String?
+    /// 【2026-10-04】削波重試：這次子行程印了 PPParams.micClipMarker；目前用的藍牙測試音增益覆蓋（nil = 預設）
+    private var sawMicClip = false
+    private var btGainOverrideDb: Double?
+    private var lastLaunch: (exe: URL, micUID: String?, extraArgs: [String])?
     private var cancelled = false
     /// 交接模式（IN_UNISON42_HANDOFF=1，只用於脈衝量尺）：子行程先準備好麥克風／藍牙／WAV，印 `@@handoff-ready` 才暫停 app 的 engine，
     /// 暫停完寫 stdin「go」；子行程停掉自己的 tap 時印 `@@tap-released` → 立刻恢復 app 的 engine。縮短兩段「沒有 tap、原音外漏」的空窗。
@@ -77,14 +81,22 @@ final class CalibrationRunner: ObservableObject {
             phase = .finished(ok: false, message: "找不到執行檔，無法校正", at: Date())
             return
         }
-        resultMessage = nil; failureMessage = nil; cancelled = false
-        measureStart = nil; measureSeconds = nil
+        cancelled = false
         recentLines = []
         allLines = []
+        btGainOverrideDb = nil
+        onStarted?(extraArgs)
+        begin(exe: exe, micUID: micUID, extraArgs: extraArgs)
+    }
+
+    /// start 與削波重試共用：重設這一次子行程的狀態、照交接／非交接流程啟動
+    private func begin(exe: URL, micUID: String?, extraArgs: [String]) {
+        resultMessage = nil; failureMessage = nil; sawMicClip = false
+        measureStart = nil; measureSeconds = nil
         enginePaused = false; engineResumed = false
+        lastLaunch = (exe, micUID, extraArgs)
         handoff = Self.handoffEnabled && pauseEngine != nil && Self.usesHandoff(extraArgs)
         phase = .running(step: handoff ? "準備中⋯" : "暫停同步播放⋯", fraction: nil)
-        onStarted?(extraArgs)
         if handoff {
             // 先啟動子行程（app 的 engine 照常出聲），子行程準備好才暫停（handle 裡的 @@handoff-ready）
             launch(exe: exe, micUID: micUID, extraArgs: extraArgs)
@@ -150,6 +162,7 @@ final class CalibrationRunner: ObservableObject {
         var env = ProcessInfo.processInfo.environment
         env["IN_UNISON42_CALIBRATE_PARENT"] = String(getpid())
         env[Self.runtimeCorrectionsEnv] = nil
+        env[PPParams.btCalGainEnv] = btGainOverrideDb.map { String(format: "%.1f", $0) }
         if extraArgs.contains("--verify-program"), !extraArgs.contains("--pulse"), let corr = runtimeCorrections?(), !corr.isEmpty {
             env[Self.runtimeCorrectionsEnv] = Self.encodeCorrections(corr)
         }
@@ -217,6 +230,7 @@ final class CalibrationRunner: ObservableObject {
         guard !line.isEmpty else { return }
         if line == "@@handoff-ready" { handoffReady(); return }
         if line == "@@tap-released" { tapReleased(); return }
+        if line == PPParams.micClipMarker { sawMicClip = true; return }
         AppLog.line("[校正] \(line)")
         recentLines.append(line)
         if allLines.count < 4000 { allLines.append(line) }
@@ -290,6 +304,26 @@ final class CalibrationRunner: ObservableObject {
     private func finish(status: Int32) {
         stopTicker()
         process = nil
+        // 削波（多半是藍牙放得離麥克風很近、測試音預設比較大）：藍牙測試音降到 fallback 自動再量一次（只重試一次）
+        if status != 0, !cancelled, sawMicClip, btGainOverrideDb == nil, let l = lastLaunch {
+            let db = PPParams.calibrationGainExternalFallbackDb
+            AppLog.line(String(format: "校正：麥克風削波 → 藍牙測試音降到 %.0f dB 自動重量一次", db))
+            if let h = stdinPipe?.fileHandleForWriting { try? h.close() }
+            stdinPipe = nil
+            btGainOverrideDb = db
+            let relaunch: () -> Void = { [weak self] in
+                MainActor.assumeIsolated {
+                    guard let self, !self.cancelled else { return }
+                    self.begin(exe: l.exe, micUID: l.micUID, extraArgs: l.extraArgs)
+                }
+            }
+            if engineResumed { reloadAfterCalibration?() } else if enginePaused || !handoff { resumeEngine?() }
+            enginePaused = false; engineResumed = false
+            // 給 app 的 engine 一點時間恢復（交接模式的子行程會在準備好時再暫停它）
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0, execute: relaunch)
+            phase = .running(step: "麥克風削波，降低藍牙測試音重量⋯", fraction: nil)
+            return
+        }
         // 結束代碼 0 且印了「✓ 已寫入」＝寫入成功（中途的 ✗ 行只是個別脈衝／個別裝置的說明）
         let ok = status == 0 && !cancelled && (failureMessage == nil || resultMessage != nil)
         let msg: String

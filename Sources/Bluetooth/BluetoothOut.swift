@@ -73,6 +73,14 @@ enum BTParams {
     static let errAlpha = 0.01
     /// 誤差超過這個就直接重新對時
     static let resyncMs = 20.0
+    /// 【2026-10-04】連線降速：藍牙實際消耗速率偏離名目超過這個比例（HAL 的 mRateScalar；沒給就用前饋量到的未夾值）
+    /// → 判定連線降速、整台靜音（不再每 0.2 秒重新對時一次）。實例：GLASS5+ 重連後 mRateScalar = 1.1（只跑 91%），
+    /// 修正夾在 ±500 ppm 追不上 → 每秒重對時約 4 次、斷斷續續
+    static let rateFaultFraction = 0.01
+    /// 解除門檻（遲滯）
+    static let rateClearFraction = 0.005
+    /// 連續多少週期超標（或回到門檻內）才切換狀態（512 frame 週期 ≈ 12 ms → 約 1.2 s）
+    static let rateFaultCycles: Int64 = 100
     /// 藍牙裝置取樣率低於這個 = HFP（通話）模式：暫停輸出（不出聲），等它回到 A2DP 再重開
     static let minA2DPRate = 32000.0
     /// AudioDeviceStop／DestroyIOProcID 失敗（或裝置已死）時，延遲多久才釋放 renderer（IOProc 可能還在跑最後一個週期）
@@ -129,6 +137,14 @@ struct BTState {
     var ff = 0.0
     var ffValid = false
     var ffCount: Int64 = 0
+    /// 前饋的未夾值（同樣平滑；連線降速判斷用，HAL 沒給 mRateScalar 時的備援）
+    var ffRaw = 0.0
+    /// 最近一次 HAL 回報的 mRateScalar（0 = 沒給）
+    var rateScalar = 0.0
+    /// 連線降速中（整台靜音、不重新對時）；rateFaultRun = 連續超標（或降速中連續回到門檻內）的週期數
+    var rateFault = false
+    var rateFaultRun: Int64 = 0
+    var rateFaultEvents: Int64 = 0
     /// 找不到對應 sinc 表、退回 Hermite 的週期數
     var hermiteCycles: Int64 = 0
     /// 同一世代最近一次讀到的 engine 時鐘：clock() 偶爾因 seqlock 碰到寫入中而回 nil 時沿用（不必重新對時、不淡出）
@@ -339,7 +355,7 @@ struct BTRenderer {
         if engRate != s.engRate {
             s.engRate = engRate; s.synced = false
             s.integ = 0; s.errF = 0; s.corr = 0
-            s.engAnchorValid = false; s.btAnchorValid = false; s.ff = 0; s.ffValid = false; s.ffCount = 0
+            s.engAnchorValid = false; s.btAnchorValid = false; s.ff = 0; s.ffRaw = 0; s.ffValid = false; s.ffCount = 0
         }
         let lim = BTParams.maxPPM * 1e-6
         let nominal = engRate / btRate
@@ -376,17 +392,39 @@ struct BTRenderer {
                     let eRate = Double(clk.sampleTime &- s.engAnchorSt) / eSpan
                     let bRate = (outTime.pointee.mSampleTime - s.btAnchorSt) / bSpan
                     if eRate > 0, bRate > 0 {
-                        var f = (eRate / bRate) / nominal - 1
+                        let fRaw = (eRate / bRate) / nominal - 1
+                        var f = fRaw
                         if f > lim { f = lim } else if f < -lim { f = -lim }
                         // 平滑：一開始是累計平均（很快有值），之後 EMA（時間常數約 ffSmoothCycles 週期），
                         // 避免每個週期的時間戳抖動直接變成頻率抖動
                         s.ffCount &+= 1
                         let b = max(1 / Double(BTParams.ffSmoothCycles), 1 / Double(s.ffCount))
                         s.ff = s.ffValid ? s.ff + b * (f - s.ff) : f
+                        s.ffRaw = s.ffValid ? s.ffRaw + b * (fRaw - s.ffRaw) : fRaw
                         s.ffValid = true
                     }
                 }
             }
+        }
+
+        // 連線降速：HAL 給了 mRateScalar 就以它為準（即時、重連後立刻反映）；沒給才用前饋的未夾值（長期平均，較慢）。
+        // 降速中整台靜音、不讀節目音（也不算欠載／重對時）；恢復後下個週期重新對時一次
+        let rs = outTime.pointee.mRateScalar
+        let dev: Double?
+        if flags.contains(.rateScalarValid), rs > 0, rs.isFinite { s.rateScalar = rs; dev = rs - 1 }
+        else { s.rateScalar = 0; dev = s.ffValid ? s.ffRaw : nil }
+        if let d = dev {
+            let crossing = s.rateFault ? abs(d) < BTParams.rateClearFraction : abs(d) > BTParams.rateFaultFraction
+            s.rateFaultRun = crossing ? s.rateFaultRun &+ 1 : 0
+            if s.rateFaultRun >= BTParams.rateFaultCycles {
+                s.rateFault.toggle(); s.rateFaultRun = 0
+                if s.rateFault { s.rateFaultEvents &+= 1 }
+                s.synced = false; s.curGain = 0
+            }
+        }
+        if s.rateFault {
+            s.synced = false; s.curGain = 0
+            return
         }
 
         // 這個週期第一個輸出 frame 播出時的 engine 時間
@@ -671,11 +709,20 @@ final class BluetoothOutput {
         var hermiteCycles: Int64 = 0
         /// engine 時鐘讀取碰到寫入中、沿用上一個時鐘的週期數
         var clockMisses: Int64 = 0
+        /// 誤差過大（> resyncMs）的重新對時次數（resyncs 的子集；連線不穩的指標）
+        var bigErrResyncs: Int64 = 0
+        /// 藍牙實際速率相對名目（1 = 正常；0.91 = 只跑 91%）；nil = 還不知道
+        var linkSpeed: Double? = nil
+        /// 連線降速中（整台靜音）
+        var rateFault = false
+        var rateFaultEvents: Int64 = 0
 
         var description: String {
-            String(format: "io=%lld 欠載=%lld 重對時=%lld 閒置=%lld 跳號=%lld 修正=%+.1fppm 誤差=%.2f 填充=%.0f 增益=%.3f 峰值=%.3f%@",
-                   ioCycles, underruns, resyncs, idleCycles, skipEvents, (ratio - 1) * 1e6, errorFrames, fillFrames, gain, peak,
-                   (hermiteCycles > 0 ? " Hermite週期=\(hermiteCycles)" : "") + (clockMisses > 0 ? " 時鐘沿用=\(clockMisses)" : ""))
+            String(format: "io=%lld 欠載=%lld 重對時=%lld（誤差過大 %lld） 閒置=%lld 跳號=%lld 修正=%+.1fppm 誤差=%.2f 填充=%.0f 增益=%.3f 峰值=%.3f%@",
+                   ioCycles, underruns, resyncs, bigErrResyncs, idleCycles, skipEvents, (ratio - 1) * 1e6, errorFrames, fillFrames, gain, peak,
+                   (linkSpeed.map { String(format: " 連線速度=%.2f%%", $0 * 100) } ?? "")
+                   + (rateFault ? " ⚠連線降速（靜音）" : "") + (rateFaultEvents > 0 ? " 降速次數=\(rateFaultEvents)" : "")
+                   + (hermiteCycles > 0 ? " Hermite週期=\(hermiteCycles)" : "") + (clockMisses > 0 ? " 時鐘沿用=\(clockMisses)" : ""))
         }
     }
     var stats: Stats { q.sync { statsLocked(resetPeak: false) } }
@@ -697,13 +744,22 @@ final class BluetoothOutput {
 
     private func log(_ s: String) { engine.log("[藍牙 \(device.name)] \(s)") }
 
+    /// 實際速率 ÷ 名目：mRateScalar 是「每個 sample 實際花的時間 ÷ 名目」，所以速度 = 1 / rateScalar；
+    /// 沒給就用前饋未夾值（ffRaw = engine÷藍牙 速率比的偏差 → 速度 = 1 / (1 + ffRaw)）
+    static func linkSpeed(_ st: BTState) -> Double? {
+        if st.rateScalar > 0 { return 1 / st.rateScalar }
+        return st.ffValid ? 1 / (1 + st.ffRaw) : nil
+    }
+
     private func statsLocked(resetPeak: Bool) -> Stats {
         guard let r = renderer else { return Stats() }
         let p = r.st
         let s = Stats(ioCycles: p.pointee.ioCycles, underruns: p.pointee.underruns, ratio: 1 + p.pointee.corr,
                       errorFrames: p.pointee.errF, resyncs: p.pointee.resyncs, idleCycles: p.pointee.idleCycles,
                       skipEvents: p.pointee.skipEvents, fillFrames: p.pointee.fill, gain: p.pointee.curGain, peak: p.pointee.peak,
-                      hermiteCycles: p.pointee.hermiteCycles, clockMisses: p.pointee.clockMisses)
+                      hermiteCycles: p.pointee.hermiteCycles, clockMisses: p.pointee.clockMisses,
+                      bigErrResyncs: p.pointee.bigErrResyncs, linkSpeed: Self.linkSpeed(p.pointee),
+                      rateFault: p.pointee.rateFault, rateFaultEvents: p.pointee.rateFaultEvents)
         if resetPeak { p.pointee.peak = 0 }
         return s
     }
@@ -1179,6 +1235,8 @@ private struct BTSimConfig {
     var trackFrom = -1.0
     var trackTo = -1.0
     var control: ((Double, ProgramRing, BTRenderer) -> Void)? = nil
+    /// 藍牙 IOProc 的 outTime 帶 mRateScalar（= btNom / btTrue，和真的 HAL 一樣）＋ rateScalarValid
+    var reportRateScalar = false
 }
 
 private struct BTSimResult {
@@ -1202,6 +1260,10 @@ private struct BTSimResult {
     var curDelayEnd = 0
     var maxAbsErrFTrack = 0.0
     var maxCorrDevTrackPPM = 0.0
+    var rateFault = false
+    var rateFaultEvents: Int64 = 0
+    /// 每個週期輸出的峰值最大值（區間 [keepFrom, 結束)；靜音檢查用）
+    var maxOutAfterFault = Float(0)
 }
 
 private func btSimulate(_ cfg: BTSimConfig, keepFrom: Double? = nil, keepSeconds: Double = 0) -> BTSimResult {
@@ -1289,8 +1351,8 @@ private func btSimulate(_ cfg: BTSimConfig, keepFrom: Double? = nil, keepSeconds
             var ts = AudioTimeStamp()
             ts.mSampleTime = Double(mb * cfg.btBuf)
             ts.mHostTime = ticks(hB + jitter())
-            ts.mRateScalar = 1
-            ts.mFlags = [.sampleTimeValid, .hostTimeValid]
+            ts.mRateScalar = cfg.reportRateScalar ? cfg.btNom / cfg.btTrue : 1
+            ts.mFlags = cfg.reportRateScalar ? [.sampleTimeValid, .hostTimeValid, .rateScalarValid] : [.sampleTimeValid, .hostTimeValid]
             withUnsafeMutablePointer(to: &abl) { ap in
                 withUnsafePointer(to: &ts) { tp in r.render(ap, tp, ring) }
             }
@@ -1305,6 +1367,7 @@ private func btSimulate(_ cfg: BTSimConfig, keepFrom: Double? = nil, keepSeconds
                 for f in 0..<cfg.btBuf where j0 + f >= keepStart && j0 + f < keepStart + keepLen { res.outputSamplesAfter.append(bbuf[2 * f]) }
             }
             res.gainTrace.append((wB, r.st.pointee.curGain))
+            if r.st.pointee.rateFault { for f in 0..<(cfg.btBuf * 2) { res.maxOutAfterFault = max(res.maxOutAfterFault, abs(bbuf[f])) } }
             if wB >= cfg.trackFrom && wB < cfg.trackTo {
                 let s = r.st.pointee
                 res.maxAbsErrFTrack = max(res.maxAbsErrFTrack, abs(s.errF))
@@ -1328,6 +1391,8 @@ private func btSimulate(_ cfg: BTSimConfig, keepFrom: Double? = nil, keepSeconds
     res.underruns = s.underruns
     res.resyncs = s.resyncs
     res.bigErrResyncs = s.bigErrResyncs
+    res.rateFault = s.rateFault
+    res.rateFaultEvents = s.rateFaultEvents
     res.idle = s.idleCycles
     res.btCycles = s.ioCycles
     res.curDelayEnd = s.curDelay
@@ -1445,6 +1510,7 @@ func runBluetoothSelfTest() -> Int32 {
         report(c, r)
         check(r.underruns == 0, "無欠載", "\(r.underruns)")
         check(r.resyncs == 1 && r.bigErrResyncs == 0, "只在開頭對時一次、沒有誤差過大重對時", "resyncs=\(r.resyncs)")
+        check(r.rateFaultEvents == 0, "沒有誤判成連線降速", "降速 \(r.rateFaultEvents) 次")
         check(r.maxAbsErrFAfter < 2 && r.maxAbsErrAfter < 4, "填充量／對時誤差收斂（\(Int(c.convergeAfter)) s 後 |誤差| 低通 < 2、原始 < 4 frame）",
               String(format: "%.2f / %.2f", r.maxAbsErrFAfter, r.maxAbsErrAfter))
         check(r.maxFillAfter - r.minFillAfter < Double(c.engBuf) + 40 && r.minFillAfter > 0,
@@ -1453,6 +1519,20 @@ func runBluetoothSelfTest() -> Int32 {
               String(format: "%+.2f vs %+.2f ppm", r.finalCorrPPM, r.expectedCorrPPM))
         let worst = r.thdn.map(\.1).max() ?? 0
         check(r.thdn.count == c.windows.count && worst < -60, "重取樣後正弦 THD+N < −60 dB（全部視窗）", String(format: "最差 %.1f dB", worst))
+    }
+
+    // 4b. 【2026-10-04】連線降速：藍牙實際只跑 91%（GLASS5+ 實測 mRateScalar = 1.1）→ 1.2 s 內判定降速、整台靜音，
+    //     不再每 0.22 s 誤差過大重對時一次（舊版 30 秒會重對時約 130 次）。HAL 有給／沒給 mRateScalar 兩種都要判得出來
+    for rsOn in [true, false] {
+        print("── 4b. 連線降速（藍牙只跑 91%，\(rsOn ? "HAL 給 mRateScalar" : "沒給 mRateScalar、靠前饋")）──")
+        var c = BTSimConfig(name: "降速 91%", btNom: 44100, btTrue: 44100 / 1.1)
+        c.seconds = 30; c.windows = []; c.convergeAfter = 1e9; c.reportRateScalar = rsOn
+        let r = btSimulate(c)
+        print(String(format: "  重對時 %lld（誤差過大 %lld）、欠載 %lld、降速 %lld 次、結束時降速=%@、降速中輸出峰值 %.4f",
+                     r.resyncs, r.bigErrResyncs, r.underruns, r.rateFaultEvents, r.rateFault ? "是" : "否", r.maxOutAfterFault))
+        check(r.rateFault && r.rateFaultEvents == 1, "判定連線降速（只觸發一次、不來回跳）", "降速 \(r.rateFaultEvents) 次、結束 \(r.rateFault)")
+        check(r.bigErrResyncs <= 12, "判定前最多十幾次重對時（不是整段每 0.22 s 一次）", "誤差過大重對時 \(r.bigErrResyncs)")
+        check(r.maxOutAfterFault == 0, "降速中整台靜音", String(format: "峰值 %.4f", r.maxOutAfterFault))
     }
 
     // 5. engine 停 1 秒再重建（generation +1、取樣率 0）：不崩潰、閒置計數、之後重新對時並收斂

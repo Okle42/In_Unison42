@@ -304,7 +304,7 @@ func runPPSignal(_ args: [String]) -> Int32      // pp-signal <訊號> <out.wav>
   envelope = true 時曲線是解析訊號的絕對值（只留正頻率做複數反 FFT，`vDSP_fft_zip`），峰值＝該頻帶的群延遲，不會在載波週期間跳。
   `PPParams.pulsesPerOutputPerRound = 2`（每台 4 個）、`PPParams.calibrationGainDb = −8`。
   `runVerifyProgramPath(…, signal: .pink, calibrationGainDb: −8)`；CLI `--signal pink|ab-pink`、`--cal-gain-db <dB|off>`。
-- 【2026-09-29 13:30】`Engine.calibrationFixedGainExternal: Float?`（外接輸出另用的固定增益；`PPParams.calibrationGainExternalDb = −24`）、
+- 【2026-09-29 13:30】`Engine.calibrationFixedGainExternal: Float?`（外接輸出另用的固定增益；`PPParams.calibrationGainExternalDb = −24`；2026-10-04 改 −12，削波時 app 自動用 −24 重量一次：`PPParams.calibrationGainExternalFallbackDb`、環境變數 `IN_UNISON42_BT_CAL_GAIN_DB`、子行程印 `@@mic-clip`）、
   `Engine.calibrationPilotDb: Double?` → `ProgramRing.extPilot`（外接輸出持續加 150 Hz pilot；`BTRenderer.render` = `renderProgram` 之後加 pilot，任何狀態都加；
   `PPParams.bluetoothPilotDb = −40`）。只有校正子行程會設。原因：藍牙耳機靜音一陣子會關輸出、吃掉短脈衝。
 - 診斷：`bt-tone-test raw|raw-tap|btout [--amp a]`、`bt-tone-test gate [--pilot dB]`（CLI/BTToneTest.swift；選單列 app 要先結束，用 app 身分跑）。

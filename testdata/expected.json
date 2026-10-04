@@ -35,23 +35,23 @@
    },
    "devices": {
     "single|40PFH4082/96": {
-     "meanMs": 1.807,
-     "spreadMs": 1.107,
+     "meanMs": 2.464,
+     "spreadMs": 0.006,
      "used": 6
     },
     "single|GLASS5+": {
-     "meanMs": 583.548,
-     "spreadMs": 77.485,
+     "meanMs": 583.949,
+     "spreadMs": 76.376,
      "used": 6
     },
     "single|MSI MP242C": {
-     "meanMs": 2.578,
-     "spreadMs": 15.077,
+     "meanMs": 3.491,
+     "spreadMs": 15.163,
      "used": 6
     },
     "single|Mac mini的揚聲器": {
-     "meanMs": -0.0,
-     "spreadMs": 4.024,
+     "meanMs": 0.657,
+     "spreadMs": 3.948,
      "used": 6
     }
    },
@@ -299,23 +299,23 @@
    },
    "devices": {
     "single|40PFH4082/96": {
-     "meanMs": 2.37,
-     "spreadMs": 197.318,
+     "meanMs": -5.212,
+     "spreadMs": 224.722,
      "used": 4
     },
     "single|GLASS5+": {
-     "meanMs": 786.31,
-     "spreadMs": 188.521,
+     "meanMs": 771.877,
+     "spreadMs": 185.095,
      "used": 4
     },
     "single|MSI MP242C": {
-     "meanMs": -16.157,
-     "spreadMs": 226.223,
+     "meanMs": -16.888,
+     "spreadMs": 253.627,
      "used": 4
     },
     "single|Mac mini的揚聲器": {
-     "meanMs": -0.0,
-     "spreadMs": 176.046,
+     "meanMs": -7.582,
+     "spreadMs": 200.025,
      "used": 6
     }
    },
