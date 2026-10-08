@@ -80,6 +80,7 @@ T0=$EPOCHREALTIME
 swiftc "${OPT[@]}" "${COMMON[@]}" "${SOURCES[@]}" "$GEN" -o "$BIN"
 T1=$EPOCHREALTIME
 cp Info.plist "$APP/Contents/Info.plist"
+cp assets/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 printf 'APPL????' > "$APP/Contents/PkgInfo"
 print -r -- "$FLAVOR $STAMP" > "$APP/Contents/Resources/build-flavor"
 
