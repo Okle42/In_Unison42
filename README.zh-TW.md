@@ -4,6 +4,10 @@
 
 讓 Mac 上所有喇叭**同時**發聲，而且選單列音量滑桿／鍵盤音量鍵能**一起**控制總音量。
 
+**▶ 23 秒看懂 In_Unison42（有聲）：**
+
+https://github.com/user-attachments/assets/eb5eef35-c85f-49db-852a-dbc406538c0e
+
 macOS 內建的「多重輸出裝置」可以同時出聲，但沒有音量控制；HDMI／DisplayPort 螢幕本身也沒有軟體音量。
 In_Unison42 不裝任何音訊驅動，只用系統框架（CoreAudio／AudioToolbox／Accelerate／Foundation）。
 

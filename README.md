@@ -6,6 +6,10 @@ A macOS menu bar app: the menu bar volume slider and your keyboard volume keys c
 
 [繁體中文說明](README.zh-TW.md)
 
+**▶ The 24-second intro (sound on):**
+
+https://github.com/user-attachments/assets/93cc3927-6236-461c-b2ef-39eef22319b3
+
 ---
 
 macOS's built-in Multi-Output Device can play through several outputs at once, but it has no volume control — and HDMI / DisplayPort monitors have no software volume of their own either.
