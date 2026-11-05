@@ -30,7 +30,7 @@ struct FrontApp: Equatable {
 }
 
 enum ModeRules {
-    static let ownBundleID = "com.kang.In-Unison42"
+    static let ownBundleID = ServicePaths.label
 
     /// Steam 遊戲庫：~/Library/Application Support/Steam/steamapps/common/<遊戲>/…（大小寫不拘）
     static func isSteamLibraryPath(_ p: String?) -> Bool {

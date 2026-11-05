@@ -65,14 +65,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
 /// 選單列 app 的 log：stdout 不是終端機時（open／登入項目啟動），stdout/stderr 附加到 ~/Library/Logs/In_Unison42.log
 enum AppLog {
-    static var fileURL: URL {
-        FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Logs/In_Unison42.log")
-    }
-
     static func redirectIfNeeded() {
         guard isatty(STDOUT_FILENO) == 0 else { setvbuf(stdout, nil, _IOLBF, 0); return }
-        let path = fileURL.path
-        try? FileManager.default.createDirectory(at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let path = ServicePaths.logFile.path
+        try? FileManager.default.createDirectory(at: ServicePaths.logFile.deletingLastPathComponent(), withIntermediateDirectories: true)
         freopen(path, "a", stdout)
         freopen(path, "a", stderr)
         setvbuf(stdout, nil, _IOLBF, 0)

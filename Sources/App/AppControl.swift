@@ -32,7 +32,7 @@ import Foundation
 import ServiceManagement
 
 enum AppControlChannel {
-    static let name = Notification.Name("com.kang.In-Unison42.ctl")
+    static let name = Notification.Name("\(ServicePaths.label).ctl")
     static var replyURL: URL { Config.directory.appendingPathComponent("ctl-reply.json") }
 
     struct Reply: Codable { let id: String; let ok: Bool; let lines: [String] }
