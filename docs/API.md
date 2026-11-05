@@ -8,7 +8,7 @@
 
 | 實作者 | 只能改 | 進入點／要實作的東西 | 自測指令（已接好） |
 |---|---|---|---|
-| UI | `Sources/UI/Panel.swift` | `PanelView`、`AppState.runCalibration()` 的內容（見 §8.1，唯一可以動 AppState 的地方） | `panel-snapshot <png>` |
+| UI | `Sources/UI/Panel.swift` | `PanelView`、`AppState.runCalibration()` 的內容 | `panel-snapshot <png>` |
 | 模式 | `Sources/Mode/ModeManager.swift` | `ModeManager.start/stop/update/reevaluate`、`runModeSelfTest` | `mode-selftest` |
 | 系統 | `Sources/System/SystemSounds.swift`、`LoginItem.swift`、`DefaultOutputGuard.swift` | `SystemSoundsRouter`、`LoginItem`、`DefaultOutputGuard`、三個 CLI | `system-sounds`、`login-item`、`output-guard` |
 | 藍牙 | `Sources/Bluetooth/BluetoothOut.swift` | `BluetoothOutput`、`BluetoothOutManager`、`runBluetoothSelfTest` | `bluetooth-selftest` |
@@ -35,7 +35,7 @@
 ```sh
 ./build.sh                                  # 除錯版（-Onone -j10 -D DEBUG -D IU42_DIAG，約 4 秒）→ build/In_Unison42.app（＋ build/In_Unison42 symlink）
 ./build.sh --release                        # 正式版（-O -wmo，不含診斷，約 26 秒）；--install = 正式版＋安裝；--install-debug = 除錯版＋安裝
-./test.sh                                   # 11 個離線自測＋15 份錄音回歸（testdata/expected.json）＋正式版閘門；非 0 = 回歸
+./test.sh                                   # 離線自測＋錄音回歸（testdata/expected.json）＋正式版閘門；非 0 = 回歸
 open build/In_Unison42.app                  # 選單列 app（LSUIElement，不出現在 Dock）
 ./build/In_Unison42 devices                 # 帶子指令 = CLI（原本的行為）
 open -W --stdout /tmp/x.log build/In_Unison42.app --args engine-live-test   # 需要 TCC 的 CLI 測試：用 app 身分跑
@@ -369,15 +369,9 @@ enum AppLog { static func line(_:); static var fileURL: URL }
 `modeManager.start(config:)` → `bluetooth.start()` → `systemSounds.start()` → `outputGuard.start()`。
 結束：outputGuard → bluetooth → modeManager → reconnector → `engine.stop()` → `systemSounds.stop()` → `InstanceLock.release()`。元件的 `start/stop` 都在主執行緒呼叫。
 
-## 8. 各 owner 的介面與注意事項（stub 已在檔案裡，含詳細 TODO）
+## 8. 各模組的介面與注意事項
 
 ### 8.1 UI（`UI/Panel.swift`）
-- `struct PanelView: View`（`@EnvironmentObject var state: AppState`），寬約 320 pt。現在是最小可用版：模式 segmented、裝置開關、警告、結束。
-- 要做：依 HIG 重做、每台 trim slider（`setTrim`）、峰值、不出聲時顯示 `plan.reason`、手動鎖定提示與「回到自動」、校正區（麥克風下拉＋按鈕）、
-  自動模式對照表編輯、登入時啟動開關（`LoginItem`）。
-- `runCalibration()`：唯一允許改 AppState 的地方。建議：停 engine＋reconnector → 子行程 `Bundle.main.executableURL calibrate [--mic uid]`（同身分、同 TCC）→ 讀 stdout 顯示進度 → `reloadConfig()` → 重新 start。
-  注意 `cmdCalibrate` 會拒絕「有別的 run 實例在跑」：子行程啟動前 app 自己的 engine 必須已停，但 app 行程本身也會被 `findRunInstances()` 算進去 →
-  **需要架構負責人加一個「由 app 呼叫」的旗標**（回報後再加，不要自己改 CLI.swift）。
 - 截圖：`In_Unison42 panel-snapshot out.png`。**已知限制**：ImageRenderer 畫不出 AppKit 背書的控制項（segmented Picker、switch Toggle 會變成黃底禁止符號）；
   驗收版面時要換成可離屏渲染的樣式或接受佔位。
 
@@ -397,9 +391,9 @@ func runModeSelfTest() -> Int32
 ### 8.3 系統（`System/*.swift`）
 - `SystemSoundsRouter(engine:)`：`start()` 把系統提示音輸出設成內建（記原值）、`engine.setExtraExcludedBundleIDs(["systemsoundserverd"])`＋找系統提示音行程 → `engine.setExtraExcludedProcesses`；監聽 `kAudioHardwarePropertyProcessObjectList`；`stop()` 還原。`cmdSystemSounds`。
 - `LoginItem`：`status`、`isEnabled`、`setEnabled(_:)`（`SMAppService.mainApp`）、`migrateFromLaunchAgent()`（bootout＋plist／bin 移垃圾桶）。
-  目前 `SMAppService.mainApp.status` = 3（notFound，app 在 build/ 底下）；要先決定安裝位置（~/Applications？）。`cmdLoginItem`。
+ `cmdLoginItem`。
 - `DefaultOutputGuard(engine:)`：`evaluate()`／`static evaluate(engine:)` 已實作（沿用 `ReconnectRules.volumeKeyWarning`）；
-  要做 `start/stop` 監聽預設輸出、`switchBackToVolumeSource()`（`Devices.setDefaultOutput(id, alsoSystemOutput: false)`，不動音量）。`cmdOutputGuard`。
+  `start/stop` 監聽預設輸出、`switchBackToVolumeSource()`（`Devices.setDefaultOutput(id, alsoSystemOutput: false)`，不動音量）。`cmdOutputGuard`。
 
 ### 8.4 藍牙（`Bluetooth/BluetoothOut.swift`）
 - `BluetoothOutput(engine:device:)`：`start() throws`、`stop()`、`slot`、`stats`；`BluetoothOutManager(engine:)`：`start()`、`stop()`、`outputs`。

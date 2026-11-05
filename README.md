@@ -51,8 +51,8 @@ open ~/Applications/In_Unison42.app
   `calibrate` accepts only `--pulse` / `--verify-program` / `--mode` / `--only <uid>` / `--mic <uid>` (`--dump`, `--signal`, chirp and so on are refused),
   and `ctl` exposes only what the panel can already do (`snapshot`, `bt attach/detach/simulate-reconnect` and `autocal simulate-appear` are debug-only).
   `In_Unison42 version` prints the build stamp (`git describe --dirty` + time + flavor).
-- **Tests**: `./test.sh` (incremental `-O` build into `build/test`) runs 11 offline self-tests in parallel, re-analyzes 15 real recordings with `pp-reanalyze` against `testdata/expected.json` (±0.05 ms),
-  and builds a separate copy with release flags to confirm that diagnostic commands and dangerous arguments are blocked (10 checks). Non-zero exit = regression; `--update-expected` regenerates the expected results (only after you deliberately change the measurement).
+- **Tests**: `./test.sh` (incremental `-O` build into `build/test`) runs the offline self-tests in parallel, re-analyzes the real recordings with `pp-reanalyze` against `testdata/expected.json` (±0.05 ms),
+  and builds a separate copy with release flags to confirm that diagnostic commands and dangerous arguments are blocked. Non-zero exit = regression; `--update-expected` regenerates the expected results (only after you deliberately change the measurement).
   Measured 2026-09-29: 18.2 s incremental, 31.8 s cold. The recordings live in `testdata/dump/` (not in version control); `testdata/expected.json` is versioned.
 - **Code signing**: ad-hoc (`-`) + Hardened Runtime by default, so no certificate is needed. The trade-off is that you have to re-grant the "System Audio Recording" permission after every rebuild.
   If you have an Apple Development certificate, set `IN_UNISON42_SIGN_IDENTITY="Apple Development: Your Name (TEAMID)" ./build.sh` (find it with `security find-identity -v -p codesigning`) — or put that identity on the first line of `~/.config/in_unison42/sign_identity` so every build picks it up:
@@ -108,7 +108,7 @@ A device is written only if at least 3 pulses, and at least half, agree. **If on
 - The test signal is **pink noise limited to 1–4 kHz**, 80 ms, −22 dBFS RMS (the old one was white noise 300 Hz–7 kHz at −20 dBFS; this is gentler). Each device other than the reference plays 4 pulses (previously 6).
 - **Latency = group delay at 1–4 kHz**: GCC-PHAT uses only 1–4 kHz and takes the peak of the **envelope** (magnitude of the analytic signal), not the carrier peak. These speakers' arrival times differ by 0.6–1.4 ms across frequency bands (dispersion);
   the old measurement used the full-band carrier peak and jumped between a "bass-dominated" and a "treble-dominated" peak. The envelope peak is phase-independent, so it doesn't jump.
-- **The test signal ignores system volume**: in the calibration subprocess, HDMI / DP / Bluetooth use a fixed gain of −8 dB (not multiplied by system volume; change it with `--cal-gain-db <dB>`, capped at 0 dB; `off` = old behavior).
+- **The test signal ignores system volume**: in the calibration subprocess, HDMI / DP use a fixed gain of −8 dB and Bluetooth −12 dB, retrying at −24 dB if the mic clips (not multiplied by system volume; change it with `--cal-gain-db <dB>`, capped at 0 dB; Bluetooth never goes above −12 dB unless retried lower; `off` = old behavior).
   The built-in speaker follows system volume (hardware volume, which this app never touches). Other apps are muted by the tap during measurement, so no program audio suddenly blasts out.
 - The old white noise (`--signal noise`) and xylophone (`--signal xylo`, which failed on real hardware — see "木琴測試音評估" (xylophone test-tone evaluation) in [docs/TESTLOG.zh-TW.md](docs/TESTLOG.zh-TW.md) (Chinese)) can still be selected; listening samples are in `docs/tone-samples/` (the G5 version is retired).
 
@@ -143,7 +143,7 @@ Hardware acceptance results: "整合驗收" (integration acceptance) V8 / V9 in 
 
 Rules and API in [docs/API.md](docs/API.md) §13 (Chinese).
 
-- Panel switch "Auto-fix drift while playing music" (**on by default**). In Music mode with program audio playing, every 5 minutes it listens for 10 seconds through the calibration mic (C270),
+- Panel switch "Auto-fix drift while playing music" (**on by default**). In Music mode, once program audio has played continuously for at least 20 seconds, every 5 minutes it listens for 10 seconds through the calibration mic (C270),
   using the music itself as the reference (1–4 kHz GCC-PHAT). In turn it adds a +3 / +4 ms probe offset (0.5 s ramp) to Bluetooth (every round) and to one wired device (every 3 rounds),
   and measures that device's error relative to the wired devices; only after 2 consistent results (confirmed 30 s later) does it correct, at a slope of ≤ 0.1 ms/s. > 10 ms, > 50 ms cumulative, or 3 consecutive misses after having measured before → it doesn't fix it itself and flags "Needs calibration".
   ("Can't measure → needs recalibration" means **it has produced at least one trustworthy measurement since calibration, followed by 3 consecutive misses**.)
@@ -168,7 +168,7 @@ A Bluetooth speaker's (GLASS5+) latency slowly drifts within a single stream (me
   A rate beyond ±3 ms/min or contradictory measurements → no extrapolation, flagged "Needs calibration".
 - **Prediction miss**: a new measurement differs from the prediction at that moment by > 3 ms (the Bluetooth threshold) = the compensation has exceeded the threshold; the panel shows "last … prediction miss".
   **2 in a row → "irregular drift"**: no extrapolation (the correction stays at the latest measurement), flagged "Needs calibration".
-- **Short calibration** (about 10–11 s, previously 31 s): when measuring Bluetooth only (`--pulse --only <bluetooth>`) it automatically uses the short measurement: reference ×2, Bluetooth ×4, reference ×2, 0.9 s apart,
+- **Short calibration** (about 10–11 s, previously 31 s): when measuring Bluetooth only (`--pulse --only <bluetooth>`) it automatically uses the short measurement: reference ×3, Bluetooth ×4, reference ×3, 0.9 s apart,
   with a search window of ±150 ms around the previous latency, and the pilot tone (150 Hz, −40 dBFS) overlapping the setup time. If nothing is found (e.g. the latency jumped too far after a reconnect) → it falls back to the full measurement automatically.
 - **Scheduling**: the 2nd point is measured about 3 minutes after the stream starts (to estimate the rate); after that it measures again whenever the predicted error may exceed 2 ms. GLASS5+'s drift rate changes, so **with the current parameters this is about every 5 minutes in practice**
   (the 30-minute upper bound only applies to speakers with a very stable rate). **It prefers pauses in the music** (program audio silent continuously for 5 s – 10 min, after at least 20 s of continuous playback,
@@ -251,7 +251,7 @@ $B calibrate --verify-program --signal ab-pink   # interleave pink (new) and whi
 $B pp-signal pink|noise|xylo|xylo-strong out.wav # write a test signal to WAV (for listening)
 #   --pulse / --verify-program / --volume-test include Bluetooth by default; --no-bluetooth leaves it out;
 #   --bt-uncalibrated (for hardware testing, off by default): uncalibrated Bluetooth plays "uncompensated" during verification
-#   --signal pink|noise|xylo|xylo-strong|ab|ab-strong|ab-pink: test signal (default pink); --cal-gain-db <dB|off>: fixed test-signal gain for HDMI / DP / Bluetooth (default −8); --signal-for <uid|name>=<signal>: change the signal for that device only
+#   --signal pink|noise|xylo|xylo-strong|ab|ab-strong|ab-pink: test signal (default pink); --cal-gain-db <dB|off>: fixed test-signal gain for HDMI / DP (default −8; Bluetooth stays at −12 or lower); --signal-for <uid|name>=<signal>: change the signal for that device only
 #   --dump <dir>: save recordings and metadata so `pp-reanalyze <dir>` can re-analyze them offline later (for tuning)
 ```
 
@@ -261,7 +261,7 @@ the signal is pink-noise pulses at 1–4 kHz (not a sweep); arrival time is the 
 - Log: `~/Library/Logs/In_Unison42.log`; state: `~/Library/Application Support/In_Unison42/state.json`; settings: `config.json` in the same folder (version 2).
 - Only one tap instance at a time: `~/Library/Application Support/In_Unison42/instance.lock` (flock). A second app instance waits (with a notice in the panel) and takes over within 1 second after the first one quits;
   running `calibrate` / `run` straight from the terminal is blocked while the app is running (use `ctl calibrate …`).
-- Self-tests: `plan-selftest`, `mode-selftest`, `engine-selftest`, `reconnect-selftest`, `service-selftest`, `bluetooth-selftest`, `panel-snapshot --selftest`, `calibrate --selftest`.
+- Self-tests: see the `TESTS` list in `test.sh`. `service-selftest` is not in that list; run it separately.
 
 ## Limitations
 
@@ -270,10 +270,10 @@ the signal is pink-noise pulses at 1–4 kHz (not a sweep); arrival time is the 
 - When the default output is switched to a device without volume (HDMI / DP, "All Speakers"), the volume source is still the built-in speaker, so the volume keys / menu bar slider control no speaker at all (macOS simply has no volume for HDMI). The panel shows a notice with a one-click switch back; it never switches automatically.
 - When the default output is switched to "another output with hardware volume", the volume source should follow: this path has **only a self-test** and hasn't been tested on hardware (no USB DAC / USB headphones — a device with volume but no mic — on hand).
 - **Wired** output devices that also have a microphone (USB headsets) don't join in (see How it works, item 7). Bluetooth speakers use the output-only path: verified on hardware not to trigger HFP, 0 underruns over 3 minutes of resampling (at gain 0).
-  **GLASS5+ is calibrated, and all four devices play in Music mode** (an app relaunch automatically triggers `--only` recalibration, because latency differs by 35–61 ms after a relaunch).
+  **GLASS5+ is calibrated, and all four devices play in Music mode** (after an app relaunch it keeps playing with its last latency and runs a short calibration once someone is listening, because latency differs by 35–61 ms after a relaunch).
   The Bluetooth verification threshold is **3 ms** (1 ms between wired devices): V7 passed 3 times in a row (Bluetooth difference 0.81 / 1.53 / 2.17 ms), but **Bluetooth latency drifts in one direction within a stream** (V7: 1.4 ms in 1.5 minutes),
-  so at that rate it exceeds 3 ms within a few minutes — **"Bluetooth within 3 ms" only holds shortly after calibration**; there is currently no periodic re-measurement, and the PI loop doesn't use measured latency (not yet decided).
-  (Older record: with a 1 ms threshold, 4 of 6 runs passed between 13:32 and 13:41.) Long-term resampling while Bluetooth is playing, and latency before vs. after a **real disconnect/reconnect**, haven't been measured yet.
+  so at that rate it exceeds 3 ms within a few minutes — **"Bluetooth within 3 ms" only holds shortly after calibration**; periodic re-measurement is covered under "Bluetooth drift compensation" above, and the PI loop doesn't use measured latency.
+  (Older record: with a 1 ms threshold, 4 of 6 runs passed between 13:32 and 13:41.) Long-term resampling while Bluetooth is playing hasn't been measured yet. The **real disconnect/reconnect** flow has been tested (see above), but the latency difference before vs. after it hasn't been measured.
 - The login item (SMAppService) is registered, but log-out/log-in and restart have **not** been tested. **The app doesn't restart itself after a crash** (`SMAppService.mainApp` has no KeepAlive; the old LaunchAgent did):
   on a crash the tap disappears with the process and audio falls back to the built-in speaker, so you have to reopen the app manually. Automatic recovery would need a separate design (e.g. an `SMAppService.agent` watchdog), which isn't done.
 - The xylophone C5 tone doesn't measure accurately in this room (see "木琴測試音評估" (xylophone test-tone evaluation) in [docs/TESTLOG.zh-TW.md](docs/TESTLOG.zh-TW.md) (Chinese)), so the test signal is pink noise.

@@ -45,8 +45,8 @@ open ~/Applications/In_Unison42.app
   `calibrate` 只准 `--pulse`／`--verify-program`／`--mode`／`--only <uid>`／`--mic <uid>`（`--dump`、`--signal`、chirp 等都拒絕），
   `ctl` 只開放面板本來就能做的事（`snapshot`、`bt attach/detach/simulate-reconnect`、`autocal simulate-appear` 只在除錯版）。
   `In_Unison42 version` 顯示建置標記（`git describe --dirty`＋時間＋種類）。
-- **測試**：`./test.sh`（`-O` 增量編譯到 `build/test`）平行跑 11 個離線自測、15 份實機錄音 `pp-reanalyze` 對 `testdata/expected.json`（±0.05 ms）、
-  另編一份正式版旗標確認診斷指令與危險參數被擋（10 項）。非 0 = 有回歸；`--update-expected` 重產標準答案（刻意改量尺後才用）。
+- **測試**：`./test.sh`（`-O` 增量編譯到 `build/test`）平行跑離線自測、實機錄音 `pp-reanalyze` 對 `testdata/expected.json`（±0.05 ms）、
+  另編一份正式版旗標確認診斷指令與危險參數被擋。非 0 = 有回歸；`--update-expected` 重產標準答案（刻意改量尺後才用）。
   2026-09-29 實測：增量 18.2 秒、冷編譯 31.8 秒。錄音在 `testdata/dump/`（不進版控），`testdata/expected.json` 要進版控。
 - **簽章**：預設 ad-hoc（`-`）＋Hardened Runtime，不需要任何憑證；代價是每次重新編譯後「系統音訊錄製」權限都要重新授權。
   有 Apple Development 憑證的話設 `IN_UNISON42_SIGN_IDENTITY="Apple Development: 你的名字 (TEAMID)" ./build.sh`（`security find-identity -v -p codesigning` 查）；也可以把身分寫在 `~/.config/in_unison42/sign_identity` 第一行，之後每次 build 自動套用：
@@ -102,7 +102,7 @@ open ~/Applications/In_Unison42.app
 - 測試音是**粉紅雜訊、只含 1–4 kHz**、80 ms、RMS −22 dBFS（舊版白雜訊 300 Hz–7 kHz、−20 dBFS；比較柔和）；參考喇叭以外每台 4 個（舊版 6 個）。
 - **延遲 = 1–4 kHz 的群延遲**：GCC-PHAT 只用 1–4 kHz，取**包絡**（解析訊號絕對值）的峰值，不取載波峰。這幾台喇叭在不同頻帶的到達時間差 0.6–1.4 ms（色散），
   舊量尺用全頻帶的載波峰，會在「低頻主導／高頻主導」兩個峰之間跳；包絡峰不受相位影響，不會跳。
-- **測試音不受系統音量影響**：校正子行程裡，HDMI／DP／藍牙改用固定增益 −8 dB（不乘系統音量；`--cal-gain-db <dB>` 可改、上限 0 dB、`off` = 舊行為）。
+- **測試音不受系統音量影響**：校正子行程裡，HDMI／DP 改用固定增益 −8 dB，藍牙 −12 dB，麥克風削波時改用 −24 dB 重量（不乘系統音量；`--cal-gain-db <dB>` 可改、上限 0 dB；藍牙不會高於 −12 dB；`off` = 舊行為）。
   內建喇叭照系統音量（硬體音量，本程式不動）。量測期間其他 App 的聲音被 tap 靜音，所以不會有突然變大聲的節目音。
 - 舊白雜訊 `--signal noise`、木琴 `--signal xylo`（實機沒過，見 [docs/TESTLOG.zh-TW.md](docs/TESTLOG.zh-TW.md)「木琴測試音評估」）仍可選；試聽檔在 `docs/tone-samples/`（G5 版已淘汰）。
 
@@ -137,7 +137,7 @@ open ~/Applications/In_Unison42.app
 
 規則與 API 見 [docs/API.md](docs/API.md) §13。
 
-- 面板「播音樂時自動修正落拍」開關（**預設開**）。音樂模式、有節目音時，每 5 分鐘用校正麥克風（C270）聽 10 秒，
+- 面板「播音樂時自動修正落拍」開關（**預設開**）。音樂模式、節目音連續播放滿 20 秒後，每 5 分鐘用校正麥克風（C270）聽 10 秒，
   以正在播的音樂為參考（1–4 kHz GCC-PHAT），輪流對藍牙（每輪）與一台有線（每 3 輪）加 +3／+4 ms 的探測偏移（0.5 秒斜坡），
   量它相對有線裝置的誤差；連續 2 次一致（30 秒後確認）才以 ≤ 0.1 ms/秒的斜率修正。> 10 ms、累計 > 50 ms、量到過之後連續 3 次量不到 → 不自己修，標「需要校正」。
   （「量不到 → 需要重新校正」＝**校正後至少可採信地量到過一次，之後連續 3 次量不到**才標。）
@@ -162,7 +162,7 @@ open ~/Applications/In_Unison42.app
   速度超過 ±3 ms／分鐘或量測彼此矛盾 → 不外推、標「需要校正」。
 - **預測失準**：新的量測和當時的預測差 > 3 ms（藍牙門檻）＝補償已經超出門檻，面板顯示「最近一次 … 預測失準」；
   **連續 2 次 → 「漂移不規則」**：不外推（修正停在最新實測）、標「需要校正」。
-- **短校正**（約 10–11 秒，原本 31 秒）：只量藍牙時（`--pulse --only <藍牙>`）自動用短量測：參考×2、藍牙×4、參考×2，間隔 0.9 秒，
+- **短校正**（約 10–11 秒，原本 31 秒）：只量藍牙時（`--pulse --only <藍牙>`）自動用短量測：參考×3、藍牙×4、參考×3，間隔 0.9 秒，
   搜尋窗以上次延遲為中心 ±150 ms，pilot（150 Hz、−40 dBFS）和準備時間重疊。找不到（例如重連後延遲跳太多）→ 自動改跑完整量測。
 - **排程**：串流開始後約 3 分鐘量第 2 點（估速度），之後預估誤差可能超過 2 ms 就再量——GLASS5+ 的漂移速度會變，**照目前參數實際約每 5 分鐘一次**
   （「每 30 分鐘」的上限只有速度很穩的喇叭才用得到）。**優先挑音樂停下來的空檔**（節目音連續靜止 5 秒～10 分鐘、靜止前連續播了 ≥ 20 秒、
@@ -245,7 +245,7 @@ $B calibrate --verify-program --signal ab-pink   # 同一段錄音裡粉紅（�
 $B pp-signal pink|noise|xylo|xylo-strong out.wav # 測試音寫成 WAV（試聽）
 #   --pulse／--verify-program／--volume-test 預設連藍牙一起量；--no-bluetooth 不開藍牙；
 #   --bt-uncalibrated（實機測試用，預設關）：驗證時讓未校正的藍牙照「不補償」出聲
-#   --signal pink|noise|xylo|xylo-strong|ab|ab-strong|ab-pink：測試音（預設 pink）；--cal-gain-db <dB|off>：HDMI／DP／藍牙測試音固定增益（預設 −8）；--signal-for <uid|名稱>=<訊號>：只有那台換測試音
+#   --signal pink|noise|xylo|xylo-strong|ab|ab-strong|ab-pink：測試音（預設 pink）；--cal-gain-db <dB|off>：HDMI／DP 測試音固定增益（預設 −8；藍牙維持 −12 或更低）；--signal-for <uid|名稱>=<訊號>：只有那台換測試音
 #   --dump <dir>：把錄音與中繼資料存下來，之後 `pp-reanalyze <dir>` 離線重新分析（調參用）
 ```
 
@@ -255,7 +255,7 @@ $B pp-signal pink|noise|xylo|xylo-strong out.wav # 測試音寫成 WAV（試聽�
 - log：`~/Library/Logs/In_Unison42.log`；狀態：`~/Library/Application Support/In_Unison42/state.json`；設定：同目錄 `config.json`（第 2 版）。
 - 同一時間只能有一個 tap 實例：`~/Library/Application Support/In_Unison42/instance.lock`（flock）。第二個 app 會等（面板提示），前一個結束後 1 秒內自動接手；
   從終端機直接跑 `calibrate`／`run` 時若 app 在跑會被擋下（請用 `ctl calibrate …`）。
-- 自測：`plan-selftest`、`mode-selftest`、`engine-selftest`、`reconnect-selftest`、`service-selftest`、`bluetooth-selftest`、`panel-snapshot --selftest`、`calibrate --selftest`。
+- 自測：見 `test.sh` 裡的 `TESTS` 清單。`service-selftest` 不在清單內，要另外跑。
 
 ## 限制
 
@@ -264,10 +264,10 @@ $B pp-signal pink|noise|xylo|xylo-strong out.wav # 測試音寫成 WAV（試聽�
 - 預設輸出切到沒有音量的裝置（HDMI／DP、「全部喇叭」）時，音量來源仍是內建喇叭；此時音量鍵／選單列滑桿調不到任何喇叭（macOS 對 HDMI 就沒有音量）。面板會提示並提供一鍵切回；不會自動切。
 - 預設輸出切到「另一台有硬體音量的輸出」時，音量來源應跟著換：這條路徑**只有 selftest**，沒有實機測過（手邊沒有 USB DAC／USB 耳機這類有音量又沒有麥克風的裝置）。
 - 同時有麥克風的**有線**輸出裝置（USB 耳麥）不會一起出聲（見原理 7）；藍牙喇叭走只輸出路徑：實機確認不觸發 HFP、重取樣 3 分鐘欠載 0（增益 0 時）。
-  **GLASS5+ 已校正、音樂模式四台出聲**（app 重開會自動 `--only` 重校，因為 app 重開後延遲差 35–61 ms）。
+  **GLASS5+ 已校正、音樂模式四台出聲**（app 重開後先用上次的延遲繼續播，有人在聽時才跑短校正，因為 app 重開後延遲差 35–61 ms）。
   藍牙驗證門檻是 **3 ms**（有線之間 1 ms）：V7 連續 3 次都過（藍牙差 0.81／1.53／2.17 ms），但**藍牙延遲在同一個串流內會單向漂**（V7：1.5 分鐘漂 1.4 ms），
-  照這個速度幾分鐘後就超過 3 ms——**「藍牙 3 ms」只在剛校正完的短時間內成立**，目前沒有定期重量、PI 迴路也不參考量到的延遲（尚未決定）。
-  （舊紀錄：13:32–13:41 用 1 ms 門檻時 6 次過 4 次。）藍牙「出聲中」的長時間重取樣、**真的斷線重連**前後延遲差都還沒量。
+  照這個速度幾分鐘後就超過 3 ms——**「藍牙 3 ms」只在剛校正完的短時間內成立**，定期重量見上方「藍牙漂移補償」，PI 迴路不參考量到的延遲。
+  （舊紀錄：13:32–13:41 用 1 ms 門檻時 6 次過 4 次。）藍牙「出聲中」的長時間重取樣還沒量。**真的斷線重連**的流程已實測（見上方），但前後的延遲差還沒量。
 - 登入項目（SMAppService）已註冊，但**沒有**做登出再登入或重開機的實測。**app 當掉後不會自動重啟**（`SMAppService.mainApp` 沒有 KeepAlive；舊 LaunchAgent 有）：
   當掉時 tap 隨行程消失、聲音退回內建喇叭，要手動再打開 app。需要自動恢復要另外設計（例如 `SMAppService.agent` 看門狗），目前沒做。
 - 木琴 C5 在這個房間量不準（見 [docs/TESTLOG.zh-TW.md](docs/TESTLOG.zh-TW.md)「木琴測試音評估」），測試音用粉紅雜訊。
