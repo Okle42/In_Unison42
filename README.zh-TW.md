@@ -53,7 +53,7 @@ open ~/Applications/In_Unison42.app
   同一個身分簽的新版本，重新編譯、換位置（build/ → ~/Applications）後權限不會失效。
 - 第一次啟動會跳「系統音訊錄製」授權；第一次校正會跳「麥克風」授權。
 - **登入時打開**：面板底部勾選（或 `In_Unison42 ctl login-item on`）→ `SMAppService.mainApp` 註冊。app 必須在 `/Applications` 或 `~/Applications`。
-  第一次開啟時會把舊版 LaunchAgent（plist 與 `bin/`）移到垃圾桶。舊的 `install`／`start` 指令已停用。
+  第一次開啟時會把舊版 LaunchAgent（plist 與 `bin/`）移到垃圾桶。舊的 `install`／`start` 指令已移除。
 
 ## 使用
 
@@ -278,7 +278,7 @@ $B pp-signal pink|noise|xylo|xylo-strong out.wav # 測試音寫成 WAV（試聽�
 - 系統提示音若由 `systemsoundserverd` 以外的行程播放（例如未來版本改由 audiomxd），不會被排除。
 - 延遲補償是整台裝置一個值；房間回音、喇叭的群延遲只能靠 `--verify` 檢查。
 - 啟動後第一秒偶爾會有一次 HAL 丟 IO 週期（log 的 `skip=1`），已把跳過的 frame 補進時間軸，不影響校正。
-- 權限未授與時 IOProc 不會跑，自動重建會以 2、4、8…秒（上限 300 秒）退避；授權後最久約 5 分鐘自動恢復，或直接 `stop` 再 `start`。
+- 權限未授與時 IOProc 不會跑，自動重建會以 2、4、8…秒（上限 300 秒）退避；授權後最久約 5 分鐘自動恢復，或直接結束再重新打開 app。
 
 程式結構與內部 API：[docs/API.md](docs/API.md)。開發期間的實機驗收紀錄：[docs/TESTLOG.zh-TW.md](docs/TESTLOG.zh-TW.md)。
 

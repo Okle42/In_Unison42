@@ -59,7 +59,7 @@ open ~/Applications/In_Unison42.app
   new builds signed with the same identity keep the permission across rebuilds and moves (build/ → ~/Applications).
 - On first launch macOS asks for "System Audio Recording" permission; the first calibration asks for "Microphone" permission.
 - **Open at login**: tick the box at the bottom of the panel (or `In_Unison42 ctl login-item on`) → registered via `SMAppService.mainApp`. The app must be in `/Applications` or `~/Applications`.
-  On first launch, the old LaunchAgent (plist and `bin/`) from earlier versions is moved to the Trash. The old `install` / `start` commands are retired.
+  On first launch, the old LaunchAgent (plist and `bin/`) from earlier versions is moved to the Trash. The old `install` / `start` commands have been removed.
 
 ## Usage
 
@@ -284,7 +284,7 @@ the signal is pink-noise pulses at 1–4 kHz (not a sweep); arrival time is the 
 - If system alert sounds are played by a process other than `systemsoundserverd` (e.g. if a future version moves them to audiomxd), they won't be excluded.
 - Latency compensation is a single value per device; room echo and speaker group delay can only be checked with `--verify`.
 - Occasionally, in the first second after launch, the HAL drops one IO cycle (`skip=1` in the log); the skipped frames are added back to the timeline, so calibration isn't affected.
-- Without permission the IOProc doesn't run, and automatic rebuilds back off at 2, 4, 8 … seconds (up to 300 s); after you grant permission it recovers on its own within about 5 minutes, or just `stop` and `start`.
+- Without permission the IOProc doesn't run, and automatic rebuilds back off at 2, 4, 8 … seconds (up to 300 s); after you grant permission it recovers on its own within about 5 minutes, or just quit and reopen the app.
 
 Code structure and internal API: [docs/API.md](docs/API.md) (Chinese). Hardware acceptance log from development: [docs/TESTLOG.zh-TW.md](docs/TESTLOG.zh-TW.md) (Chinese).
 

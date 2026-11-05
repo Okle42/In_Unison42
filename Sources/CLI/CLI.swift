@@ -1,6 +1,6 @@
 // CLI.swift — In_Unison42 的命令列子指令（原 main.swift）。
 // 進入點在 App/AppMain.swift：帶子指令 → runCLI；不帶參數 → 選單列 app。
-// CLI 分派：run / calibrate / mics / install / uninstall / start / stop / status / devices / *-selftest / help
+// CLI 分派：run / calibrate / mics / uninstall / stop / status / devices / *-selftest / help
 import Foundation
 
 let usage = """
@@ -22,9 +22,8 @@ let usage = """
   ctl <指令…>             控制執行中的選單列 app（mode／state／guard-restore／calibrate／peaks／bt／login-item／config），見 ctl help
   mode-selftest | bluetooth-selftest       模式規則／藍牙重取樣離線自測
   system-sounds | login-item | output-guard 系統提示音行程、登入項目（SMAppService）、預設輸出提示
-  install                 （停用）登入自動啟動改用選單列 app 的「在登入時打開」（login-item on）
   uninstall | stop        移除／停止舊版 LaunchAgent
-  start | status          重新載入舊 LaunchAgent／查看狀態（含選單列 app 的 state.json）
+  status                  查看狀態（含選單列 app 的 state.json）
   reconnect-selftest [-v] 重接邏輯自測（虛擬時間，不出聲）
   service-selftest        行程辨識自測（會短暫開 sh/cat 兩個無害行程）
   engine-selftest         IOProc 渲染離線自測（輸入 buffer 排列、solo、onset、延遲淡入淡出、遮罩、節目音緩衝；不出聲）
@@ -202,7 +201,7 @@ func cmdCalibrate(_ args: [String]) -> Int32 {
         guard resumeService else { return }
         resumeService = false
         let r = launchdBootstrap()
-        print(r.status == 0 ? "✓ 已恢復常駐服務（會讀到新設定）" : "✗ 恢復常駐服務失敗（\(r.status)）：\(r.err)；請執行 In_Unison42 start")
+        print(r.status == 0 ? "✓ 已恢復常駐服務（會讀到新設定）" : "✗ 恢復常駐服務失敗（\(r.status)）：\(r.err)；下次登入會再啟動")
     }
     let engine = Engine()
     installSignalHandlers { _ in
@@ -219,24 +218,6 @@ func cmdCalibrate(_ args: [String]) -> Int32 {
 }
 
 /// 重新載入已安裝的 LaunchAgent（stop 之後要馬上再開用）
-func cmdStart() -> Int32 {
-    guard FileManager.default.fileExists(atPath: ServicePaths.plist.path) else {
-        print("✗ 尚未安裝（In_Unison42 install）"); return 1
-    }
-    let st = launchdState()
-    if st.loaded, st.pid != nil { print("已在執行：pid \(st.pid!)"); return 0 }
-    let manual = findRunInstances()
-    if !manual.isEmpty {
-        print("✗ 有手動執行的 run（pid \(manual.map { String($0.pid) }.joined(separator: ", "))），請先 stop"); return 1
-    }
-    let r = st.loaded ? shell("/bin/launchctl", ["kickstart", ServicePaths.serviceTarget]) : launchdBootstrap()
-    guard r.status == 0 else { print("✗ 啟動失敗（\(r.status)）：\(r.err)"); return 1 }
-    Thread.sleep(forTimeInterval: 1)
-    let s2 = launchdState()
-    print("✓ 已啟動：state=\(s2.state ?? "?") pid=\(s2.pid.map(String.init) ?? "無")")
-    return 0
-}
-
 func cmdDevices() -> Int32 {
     let dOut = Devices.defaultOutput()?.uid
     let dIn = Devices.defaultInput()?.uid
@@ -270,7 +251,6 @@ func runCLI(_ argv: [String]) -> Int32 {
     let rc: Int32
     switch cmd {
     case "run": rc = cmdRun(rest)
-    case "start": rc = cmdStart()
     case "reconnect-selftest": rc = runReconnectSelfTest(verbose: rest.contains("-v"))
     case "service-selftest": rc = runServiceSelfTest()
     case "engine-selftest": rc = runEngineSelfTest()
@@ -303,7 +283,7 @@ func runCLI(_ argv: [String]) -> Int32 {
     case "login-item": rc = cmdLoginItem(rest)
     case "output-guard": rc = cmdOutputGuard(rest)
     case "bluetooth-selftest": rc = runBluetoothSelfTest()
-    case "install", "uninstall", "stop", "status": rc = runService(cmd, args: rest)
+    case "uninstall", "stop", "status": rc = runService(cmd, args: rest)
     case "devices": rc = cmdDevices()
     case "help", "-h", "--help": print(usage); rc = 0
     default: print("未知指令：\(cmd)\n\n\(usage)"); rc = 2

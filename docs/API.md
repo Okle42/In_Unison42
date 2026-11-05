@@ -321,7 +321,7 @@ func runPPSignal(_ args: [String]) -> Int32      // pp-signal <訊號> <out.wav>
   診斷 `programProcesses/setSolo/armOnset/onsetSampleTime`。輸入 buffer 排列規則不變（tap 在子裝置輸入之後）。
 - CLI：`run [--force] [--mode music|movie|game]`（設定是 auto 時 CLI 用音樂）、`calibrate …`、`devices`、`status`（v2 顯示實測延遲、三種模式的計畫、app 的 state.json）、
   `stop`／`uninstall`（舊 LaunchAgent）、`*-selftest`、`engine-live-test`、`panel-snapshot`。
-- 【v2】`install`（LaunchAgent）停用：app bundle 的執行檔單獨複製出去會失去 Info.plist 與固定身分。
+- 【v2】`install`、`start`（LaunchAgent）已移除：app bundle 的執行檔單獨複製出去會失去 Info.plist 與固定身分。
 
 ## 7. App 層（App/*.swift）
 

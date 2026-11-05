@@ -33,18 +33,13 @@ enum ServicePaths {
 
 // MARK: - 進入點
 
-/// cmd ∈ install / uninstall / stop / status
+/// cmd ∈ uninstall / stop / status
 func runService(_ cmd: String, args: [String]) -> Int32 {
     var opts = ServiceOptions()
     var i = 0
     while i < args.count {
         switch args[i] {
         case "--dry-run", "-n": opts.dryRun = true
-        case "--force", "-f": opts.force = true
-        case "--plist-out":
-            guard i + 1 < args.count else { print("✗ --plist-out 需要一個路徑"); return 2 }
-            opts.plistOut = URL(fileURLWithPath: (args[i + 1] as NSString).expandingTildeInPath)
-            i += 1
         case "-h", "--help":
             print(serviceUsage); return 0
         default:
@@ -53,12 +48,6 @@ func runService(_ cmd: String, args: [String]) -> Int32 {
         i += 1
     }
     switch cmd {
-    case "install":
-        // 第 2 版起執行檔在 In_Unison42.app 裡（Info.plist 不再內嵌進執行檔），單獨複製出去跑 LaunchAgent 會拿不到
-        // 系統音訊錄製的用途說明與固定簽章身分 → 停用；登入自動啟動改由 LoginItem（SMAppService.mainApp）負責
-        print("✗ LaunchAgent 安裝已停用：第一期改用選單列 app＋登入項目（`In_Unison42 login-item on`，實作中）")
-        print("  舊服務仍可用 stop／status／uninstall 管理")
-        return 2
     case "uninstall": return serviceUninstall(opts)
     case "stop": return serviceStop(opts)
     case "status": return serviceStatus(opts)
@@ -70,16 +59,10 @@ func runService(_ cmd: String, args: [String]) -> Int32 {
 
 struct ServiceOptions {
     var dryRun = false
-    var force = false
-    var plistOut: URL? = nil
 }
 
 let serviceUsage = """
 服務指令：
-  install   [--dry-run] [--plist-out <路徑>] [--force]
-            複製執行檔到 \(ServicePaths.installedBinary.path)
-            寫 \(ServicePaths.plist.path) 並載入（登入時自動啟動、當掉自動重啟）
-            --force：前景已有 In_Unison42 run 在跑也照樣安裝（兩個 tap 會互相靜音，不建議）
   uninstall [--dry-run]   停止服務，plist 與安裝的執行檔移到垃圾桶
   stop      [--dry-run]   停止服務（launchctl bootout，不刪檔；下次登入會再啟動）＋SIGTERM 手動跑的 run
   status                  launchd 狀態、pid、log 最後 10 行、設定摘要
@@ -501,7 +484,7 @@ func serviceStop(_ o: ServiceOptions) -> Int32 {
         if dry {
             print("  [dry-run] launchctl bootout \(ServicePaths.serviceTarget)（pid \(st.pid.map(String.init) ?? "無")）")
         } else if launchdBootout() {
-            print("✓ 已停止 LaunchAgent（plist 保留；下次登入會再啟動，現在要再開請執行 In_Unison42 start）")
+            print("✓ 已停止 LaunchAgent（plist 保留；下次登入會再啟動）")
         } else {
             print("✗ bootout 後服務仍在"); rc = 1
         }
