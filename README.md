@@ -265,7 +265,7 @@ the signal is pink-noise pulses at 1–4 kHz (not a sweep); arrival time is the 
 
 ## Limitations
 
-- Requires macOS 14.2 or later (Process Tap).
+- Requires macOS 14.4 or later (`LSMinimumSystemVersion` and the build target; the Process Tap API itself arrived in 14.2).
 - During display sleep (`pmset displaysleepnow`, 8 s and 60 s) the HDMI / DP audio devices do **not** disappear, so no rebuild is triggered. **Physically unplugging the display cable and full system sleep (`pmset sleepnow`) haven't been tested yet**; the rebuild and wake paths are only verified in virtual-time simulation (wake detected within ≤ 1 s, forced rebuild if IO hasn't advanced 1 s after wake, rebuild after a 2 s IO stall).
 - When the default output is switched to a device without volume (HDMI / DP, "All Speakers"), the volume source is still the built-in speaker, so the volume keys / menu bar slider control no speaker at all (macOS simply has no volume for HDMI). The panel shows a notice with a one-click switch back; it never switches automatically.
 - When the default output is switched to "another output with hardware volume", the volume source should follow: this path has **only a self-test** and hasn't been tested on hardware (no USB DAC / USB headphones — a device with volume but no mic — on hand).

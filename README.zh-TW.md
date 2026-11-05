@@ -259,7 +259,7 @@ $B pp-signal pink|noise|xylo|xylo-strong out.wav # 測試音寫成 WAV（試聽�
 
 ## 限制
 
-- 需要 macOS 14.2 以上（Process Tap）。
+- 需要 macOS 14.4 以上（`LSMinimumSystemVersion` 與編譯目標；Process Tap API 本身是 14.2 加入）。
 - 螢幕休眠（`pmset displaysleepnow` 8 秒、60 秒）時，HDMI／DP 音訊裝置**沒有**消失，所以不會觸發重建。**實體拔插螢幕線、整機睡眠（`pmset sleepnow`）都還沒有實測**；重建與喚醒路徑只在虛擬時間模擬中驗證（喚醒偵測 ≤ 1 秒、喚醒後 1 秒 IO 沒前進就強制重建、IO 停住 2 秒就重建）。
 - 預設輸出切到沒有音量的裝置（HDMI／DP、「全部喇叭」）時，音量來源仍是內建喇叭；此時音量鍵／選單列滑桿調不到任何喇叭（macOS 對 HDMI 就沒有音量）。面板會提示並提供一鍵切回；不會自動切。
 - 預設輸出切到「另一台有硬體音量的輸出」時，音量來源應跟著換：這條路徑**只有 selftest**，沒有實機測過（手邊沒有 USB DAC／USB 耳機這類有音量又沒有麥克風的裝置）。
