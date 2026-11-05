@@ -725,9 +725,7 @@ final class BluetoothOutput {
                    + (hermiteCycles > 0 ? " Hermite週期=\(hermiteCycles)" : "") + (clockMisses > 0 ? " 時鐘沿用=\(clockMisses)" : ""))
         }
     }
-    var stats: Stats { q.sync { statsLocked(resetPeak: false) } }
-    /// 讀統計並把峰值歸零（面板每秒讀一次用）
-    func takeStats() -> Stats { q.sync { statsLocked(resetPeak: true) } }
+    var stats: Stats { q.sync { statsLocked() } }
 
     init(engine: Engine, device: AudioDevice, minimumSafetyMs: Double = BTParams.defaultSafetyMs) {
         self.engine = engine
@@ -751,7 +749,7 @@ final class BluetoothOutput {
         return st.ffValid ? 1 / (1 + st.ffRaw) : nil
     }
 
-    private func statsLocked(resetPeak: Bool) -> Stats {
+    private func statsLocked() -> Stats {
         guard let r = renderer else { return Stats() }
         let p = r.st
         let s = Stats(ioCycles: p.pointee.ioCycles, underruns: p.pointee.underruns, ratio: 1 + p.pointee.corr,
@@ -760,7 +758,6 @@ final class BluetoothOutput {
                       hermiteCycles: p.pointee.hermiteCycles, clockMisses: p.pointee.clockMisses,
                       bigErrResyncs: p.pointee.bigErrResyncs, linkSpeed: Self.linkSpeed(p.pointee),
                       rateFault: p.pointee.rateFault, rateFaultEvents: p.pointee.rateFaultEvents)
-        if resetPeak { p.pointee.peak = 0 }
         return s
     }
 
@@ -878,7 +875,7 @@ final class BluetoothOutput {
             let s2 = AudioDeviceDestroyIOProcID(device.id, p)
             procID = nil
             deferFree = !alive || s1 != noErr || s2 != noErr
-            log("已停止（\(statsLocked(resetPeak: false))）" + (deferFree
+            log("已停止（\(statsLocked())）" + (deferFree
                 ? "；Stop=\(s1) Destroy=\(s2) alive=\(alive) → renderer 延遲 \(Int(BTParams.deferredFreeSeconds)) 秒才釋放" : ""))
         }
         if let s = _slot { engine.unregisterExternalOutput(slot: s); _slot = nil }

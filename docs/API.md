@@ -117,7 +117,6 @@ struct Config: Codable, Equatable {
     func effectiveTrimDb(_ uid: String) -> Double        // 夾 -60…+12（v2 與 levelMatch 無關）
     func effectiveTrimGain(_ uid: String) -> Float
     func measuredLatencyMs(_ uid: String) -> Double?     // 非有限／負值 → nil
-    func effectiveDelayMs(_ uid: String) -> Double       // 【舊版】v1 補償值；v2 的延遲請用 plan()／engine.plan
     var startupPlayMode: PlayMode                         // mode.fixed ?? .music
     static func migrateV1(_ c: inout Config)
 }
@@ -528,10 +527,7 @@ log 一行「clock domain：…」。本機三台（內建、MSI HDMI、電視 D
 - IOProc 每個輸出每週期**只讀一次** `testState`（`st`），收尾用 `RTShared.shouldEndTest(readState: st, hadBuffer:, finished:)`：
   只有開頭讀到 1 才可能清 0（2026-09-29 審查修正：以前收尾重讀一次，開頭讀到 0、控制端中途 `playTestSignal` 寫 1 → 被清掉、測試音永遠不播）。
   `engine-selftest` 第 7 節涵蓋。
-- `engine.releaseTestSignalBuffer() -> Int`（bytes）：校正／測試結束後可主動收回：testState 全 0 → 指標設 nil → 等 IOProc 再跑兩個週期才 free
-  （等不到就放棄，留給 stop 釋放）。`engine.testSignalBufferBytes`：目前占用（app 平常應為 0）。
-- `engine.prepareTestSignalBuffer() -> Bool`：可選，量測開始前先配置（第一次 playTestSignal 自己配置約幾 ms，排程很緊時開頭可能被截）。
-- 呼叫端（Calibrate／LiveTest）**不用改**；建議在 start 之後、第一次排程之前呼叫一次 `prepareTestSignalBuffer()`。
+- `engine.testSignalBufferBytes`：目前占用（app 平常應為 0）。
 
 ### 11.7 離線量到的（不是 app 實機 CPU）
 - `RTShared.render` 3 輸出 × 512 frame：即時負載 0.04% CPU（-O）。
@@ -678,7 +674,6 @@ var latencyCorrections: [String: Double]
 func delayOffsets() -> [String: DelayOffset]            // 每台輸出目前／目標的探測與修正額外延遲（ms）
 var isSlewing: Bool
 func programClock() -> (clock, sampleRate, generation, writeEnd)?   // 節目音時鐘（sampleTime ↔ 延遲 0 輸出的 hostTime）
-func programSnapshot(from:frames:) -> [Float]?
 final class ProgramRecorder { init(ring:maxSeconds:); func start(lookbackSeconds:) -> Bool; func stop() -> ProgramRecording? }  // 每 0.2 s 從 ProgramRing 拷一次
 func holdUntilCalibrated(uid:firstConnect:) -> Bool; func releaseReconnectHolds(_:); var reconnectHolds   // 藍牙重連：重新 start 前先靜音
 ```

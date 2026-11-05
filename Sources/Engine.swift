@@ -1339,35 +1339,9 @@ final class Engine {
         }
     }
 
-    /// 先把測試訊號緩衝配置好（可選）：playTestSignal 第一次呼叫也會自己配置（約 5.5 MB 清零，幾 ms），
-    /// 排程很緊的呼叫端可以在量測開始前先呼叫這個，避免第一個測試訊號的開頭因為配置而過了排程時間。回傳是否已有緩衝
-    @discardableResult
-    func prepareTestSignalBuffer() -> Bool {
-        sync {
-            guard rt.nOut > 0 else { return false }
-            if !rt.hasTestBuffer {
-                let bytes = rt.allocateTestBuffer()
-                log(String(format: "測試訊號緩衝配置 %.1f MB（%d 輸出 × %.0f 秒）", Double(bytes) / 1_048_576, rt.nOut, Engine.maxTestSignalSeconds))
-            }
-            return rt.hasTestBuffer
-        }
-    }
-
     /// 測試訊號緩衝目前占用的 bytes（0 = 沒配置；app 平常應為 0）
     var testSignalBufferBytes: Int {
         sync { rt.nOut > 0 && rt.hasTestBuffer ? rt.nOut * rt.testCap * MemoryLayout<Float>.size : 0 }
-    }
-
-    /// 校正／測試結束後收回測試訊號緩衝（取消排程中的測試訊號；等 IOProc 跑完兩個週期才釋放，最多等約 1 秒）。
-    /// 不呼叫也沒關係：stop()／rebuild() 時一定釋放。回傳釋放的 bytes
-    @discardableResult
-    func releaseTestSignalBuffer() -> Int {
-        sync {
-            guard rt.nOut > 0 else { return 0 }
-            let b = rt.releaseTestBuffer(ioAlive: _running && procID != nil)
-            if b > 0 { log(String(format: "測試訊號緩衝已釋放 %.1f MB", Double(b) / 1_048_576)) }
-            return b
-        }
     }
 
     // MARK: 狀態
@@ -1743,15 +1717,6 @@ extension Engine {
         let we = ring.writeEnd.pointee
         guard we >= 0, ring.generation.pointee == gen else { return nil }
         return (ProgramClockSample(sampleTime: c.sampleTime, hostTime: c.hostTime), sr, gen, we)
-    }
-
-    /// 拷出節目音 frame [t, t+n)（立體聲交錯，原始 tap 輸入、未延遲、未乘增益）；區間還沒寫入或已被覆寫 → nil。
-    /// 非即時執行緒用（會配置記憶體）；ProgramRing 只有約 2.7 秒，長時間請用 ProgramRecorder 邊錄邊拷
-    func programSnapshot(from t: Int64, frames n: Int) -> [Float]? {
-        guard n > 0, n <= ProgramRing.frames else { return nil }
-        var out = [Float](repeating: 0, count: n * 2)
-        let ok = out.withUnsafeMutableBufferPointer { program.read(from: t, frames: n, into: $0.baseAddress!) }
-        return ok ? out : nil
     }
 
     /// host tick → 秒

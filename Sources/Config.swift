@@ -388,12 +388,6 @@ struct Config: Codable, Equatable {
 
     func device(_ uid: String) -> DeviceConfig { devices[uid] ?? DeviceConfig() }
 
-    /// 【舊版】第 1 版的補償延遲（ms），夾在 0...maxDelayMs。第 2 版的實際延遲請用 Engine.plan / plan()
-    func effectiveDelayMs(_ uid: String) -> Double {
-        let d = device(uid).delayMs
-        return d.isFinite ? min(max(d, 0), Config.maxDelayMs) : 0
-    }
-
     /// 生效 trim（dB），夾在 trimDbRange（第 2 版一律生效，與 levelMatch 無關）
     func effectiveTrimDb(_ uid: String) -> Double {
         let t = device(uid).trimDb
