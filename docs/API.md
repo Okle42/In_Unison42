@@ -390,8 +390,7 @@ func runModeSelfTest() -> Int32
 
 ### 8.3 系統（`System/*.swift`）
 - `SystemSoundsRouter(engine:)`：`start()` 把系統提示音輸出設成內建（記原值）、`engine.setExtraExcludedBundleIDs(["systemsoundserverd"])`＋找系統提示音行程 → `engine.setExtraExcludedProcesses`；監聽 `kAudioHardwarePropertyProcessObjectList`；`stop()` 還原。`cmdSystemSounds`。
-- `LoginItem`：`status`、`isEnabled`、`setEnabled(_:)`（`SMAppService.mainApp`）、`migrateFromLaunchAgent()`（bootout＋plist／bin 移垃圾桶）。
- `cmdLoginItem`。
+- `LoginItem`：`status`、`isEnabled`、`setEnabled(_:)`（`SMAppService.mainApp`）、`migrateFromLaunchAgent()`（bootout＋plist／bin 移垃圾桶）。 `cmdLoginItem`。
 - `DefaultOutputGuard(engine:)`：`evaluate()`／`static evaluate(engine:)` 已實作（沿用 `ReconnectRules.volumeKeyWarning`）；
   `start/stop` 監聽預設輸出、`switchBackToVolumeSource()`（`Devices.setDefaultOutput(id, alsoSystemOutput: false)`，不動音量）。`cmdOutputGuard`。
 
